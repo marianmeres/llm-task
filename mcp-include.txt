@@ -1,0 +1,5 @@
+One-shot stateless LLM task runner: define a prompt once as a reusable typed function
+("summarize into a title", "classify", "extract to JSON schema"), call it with varying
+input. Anthropic + mock adapters, normalized error taxonomy, retries/timeouts, structured
+output via Standard Schema (zod/valibot) or JSON Schema, output cleaners, in-memory cache,
+bounded-concurrency batch helper. Not a chat SDK or agent framework.

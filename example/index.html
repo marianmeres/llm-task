@@ -1,0 +1,1114 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta
+			name="viewport"
+			content="width=device-width, initial-scale=1, viewport-fit=cover"
+		/>
+		<title>@marianmeres/llm-task — example</title>
+		<meta
+			name="description"
+			content="Interactive showcase of @marianmeres/llm-task — script a provider, run the real client, and watch retries, deadlines, cleaners, structured output and the error taxonomy happen live."
+		/>
+		<!-- Tracks the active (manually toggled) theme; updated by main.ts. -->
+		<meta name="theme-color" content="#ffffff" />
+		<link
+			rel="icon"
+			href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧩</text></svg>"
+		/>
+
+		<!--
+			Styling follows @marianmeres/design-tokens with the Reboot bridge:
+			  · reboot.css — Bootstrap Reboot element normalize/reset (consumes --bs-*)
+			  · theme.css  — design-tokens "zinc" theme + reboot bridge
+			                 (sets --stuic-color-* AND the --bs-* vars; dark on :root.dark)
+			  · the inline block below — minimal, token-driven example layout
+		-->
+		<link rel="stylesheet" href="./reboot.css" />
+		<link rel="stylesheet" href="./theme.css" />
+
+		<!--
+			Anti-FOUC: set the dark class before first paint so dark-preference
+			users don't flash light. main.ts re-confirms this idempotently.
+			The storage key must match THEME_KEY in main.ts.
+		-->
+		<script>
+		try {
+			var k = "llm-task-example-theme";
+			var s = localStorage.getItem(k);
+			var d = s ? s === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+			document.documentElement.classList.toggle("dark", d);
+		} catch (e) {}
+		</script>
+
+		<style>
+		:root {
+			color-scheme: light;
+			--mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+				"Liberation Mono", monospace;
+			--radius: 0.55rem;
+		}
+		:root.dark {
+			color-scheme: dark;
+		}
+
+		body {
+			min-height: 100dvh;
+		}
+
+		.app {
+			max-width: 76rem;
+			margin: 0 auto;
+			padding: clamp(1rem, 4vw, 2.5rem) clamp(1rem, 4vw, 2rem) 4rem;
+		}
+
+		/* ---- header ---------------------------------------------------------- */
+
+		.app-header {
+			display: flex;
+			align-items: flex-start;
+			justify-content: space-between;
+			gap: 1rem;
+			margin-bottom: 1.25rem;
+		}
+		.app-header h1 {
+			margin: 0 0 0.4rem;
+			font-size: 1.05rem;
+			font-weight: 600;
+			line-height: 1.3;
+		}
+		.app-header h1 a {
+			color: inherit;
+			text-decoration: none;
+		}
+		.lead {
+			max-width: 68ch;
+			margin: 0;
+			color: var(--stuic-color-muted-foreground);
+			font-size: 0.875rem;
+			line-height: 1.6;
+		}
+		.lead strong {
+			color: var(--stuic-color-foreground);
+			font-weight: 600;
+		}
+		.lead code {
+			font-size: 0.9em;
+		}
+
+		.theme-toggle {
+			flex: none;
+			width: 2.5rem;
+			height: 2.5rem;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			border: 1px solid var(--stuic-color-border);
+			border-radius: var(--radius);
+			background: var(--stuic-color-surface);
+			color: var(--stuic-color-surface-foreground);
+			font-size: 1rem;
+			line-height: 1;
+			cursor: pointer;
+		}
+		.theme-toggle:hover {
+			background: var(--stuic-color-surface-hover);
+		}
+
+		/* ---- tab strip ------------------------------------------------------- */
+
+		.tabs {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 0.25rem;
+			padding: 0.25rem;
+			margin-bottom: 1.25rem;
+			border: 1px solid var(--stuic-color-border);
+			border-radius: var(--radius);
+			background: var(--stuic-color-muted);
+		}
+		.tabs button {
+			flex: 1 1 6rem;
+			font: inherit;
+			font-size: 0.85rem;
+			padding: 0.45rem 0.8rem;
+			border: 0;
+			border-radius: calc(var(--radius) - 0.2rem);
+			background: transparent;
+			color: var(--stuic-color-muted-foreground);
+			cursor: pointer;
+		}
+		.tabs button:hover {
+			color: var(--stuic-color-foreground);
+		}
+		.tabs button[aria-selected="true"] {
+			background: var(--stuic-color-background);
+			color: var(--stuic-color-foreground);
+			font-weight: 600;
+			box-shadow: 0 1px 2px rgb(0 0 0 / 0.06);
+		}
+
+		/* ---- generic layout -------------------------------------------------- */
+
+		.cols {
+			display: grid;
+			gap: 1rem;
+			align-items: start;
+		}
+		@media (min-width: 64rem) {
+			.cols {
+				grid-template-columns: minmax(0, 23rem) minmax(0, 1fr);
+			}
+		}
+		.stack {
+			display: flex;
+			flex-direction: column;
+			gap: 1rem;
+			min-width: 0;
+		}
+
+		.card {
+			border: 1px solid var(--stuic-color-border);
+			border-radius: var(--radius);
+			background: var(--stuic-color-surface);
+			color: var(--stuic-color-surface-foreground);
+			padding: 0.9rem 1rem 1rem;
+		}
+		.card > h2 {
+			margin: 0 0 0.75rem;
+			font-size: 0.72rem;
+			font-weight: 600;
+			letter-spacing: 0.06em;
+			text-transform: uppercase;
+			color: var(--stuic-color-muted-foreground);
+		}
+		.card-note {
+			margin: 0.6rem 0 0;
+			font-size: 0.78rem;
+			line-height: 1.6;
+			color: var(--stuic-color-muted-foreground);
+		}
+		.card-note code {
+			font-size: 0.95em;
+		}
+
+		/* ---- form controls --------------------------------------------------- */
+
+		.field {
+			display: flex;
+			flex-direction: column;
+			gap: 0.3rem;
+			margin-bottom: 0.75rem;
+		}
+		.field:last-child {
+			margin-bottom: 0;
+		}
+		.field > label,
+		.legend {
+			font-size: 0.75rem;
+			font-weight: 600;
+			color: var(--stuic-color-muted-foreground);
+		}
+		.field-hint {
+			font-size: 0.72rem;
+			color: var(--stuic-color-muted-foreground);
+		}
+
+		/* 1rem (16px) keeps iOS Safari from zooming in on focus. */
+		input[type="text"],
+		input[type="number"],
+		select,
+		textarea {
+			width: 100%;
+			font: inherit;
+			font-size: 0.85rem;
+			padding: 0.45rem 0.6rem;
+			border: 1px solid var(--stuic-color-border);
+			border-radius: calc(var(--radius) - 0.15rem);
+			background: var(--stuic-color-input);
+			color: var(--stuic-color-foreground);
+		}
+		@media (max-width: 48rem) {
+			input[type="text"],
+			input[type="number"],
+			select,
+			textarea {
+				font-size: 1rem;
+			}
+		}
+		textarea {
+			resize: vertical;
+			line-height: 1.55;
+		}
+		textarea.mono {
+			font-family: var(--mono);
+			font-size: 0.78rem;
+		}
+		.grid-2 {
+			display: grid;
+			grid-template-columns: 1fr 1fr;
+			gap: 0.75rem;
+		}
+
+		.check {
+			display: flex;
+			align-items: flex-start;
+			gap: 0.5rem;
+			padding: 0.15rem 0;
+			font-size: 0.8rem;
+			cursor: pointer;
+		}
+		.check input {
+			margin-top: 0.2rem;
+			accent-color: var(--stuic-color-primary);
+			cursor: pointer;
+		}
+		.check code {
+			font-size: 0.95em;
+		}
+		.checks {
+			display: flex;
+			flex-direction: column;
+		}
+
+		.btn {
+			font: inherit;
+			font-size: 0.82rem;
+			font-weight: 500;
+			padding: 0.5rem 0.9rem;
+			border: 1px solid var(--stuic-color-border);
+			border-radius: calc(var(--radius) - 0.15rem);
+			background: var(--stuic-color-background);
+			color: var(--stuic-color-foreground);
+			cursor: pointer;
+			white-space: nowrap;
+		}
+		.btn:hover:not(:disabled) {
+			background: var(--stuic-color-surface-hover);
+		}
+		.btn:disabled {
+			opacity: 0.5;
+			cursor: not-allowed;
+		}
+		.btn-primary {
+			border-color: var(--stuic-color-primary);
+			background: var(--stuic-color-primary);
+			color: var(--stuic-color-primary-foreground);
+		}
+		.btn-primary:hover:not(:disabled) {
+			background: var(--stuic-color-primary-hover);
+		}
+		.btn-sm {
+			font-size: 0.72rem;
+			padding: 0.25rem 0.55rem;
+		}
+		.actions {
+			display: flex;
+			flex-wrap: wrap;
+			align-items: center;
+			gap: 0.5rem;
+		}
+		.spacer {
+			flex: 1 1 auto;
+		}
+
+		/* ---- code + values --------------------------------------------------- */
+
+		pre.code {
+			margin: 0;
+			padding: 0.65rem 0.75rem;
+			max-height: 22rem;
+			overflow: auto;
+			border: 1px solid var(--stuic-color-border);
+			border-radius: calc(var(--radius) - 0.15rem);
+			background: var(--stuic-color-background);
+			font-family: var(--mono);
+			font-size: 0.75rem;
+			line-height: 1.6;
+			tab-size: 2;
+			white-space: pre;
+		}
+		pre.code.wrap {
+			white-space: pre-wrap;
+			overflow-wrap: anywhere;
+		}
+		code {
+			font-family: var(--mono);
+		}
+
+		.kv {
+			display: grid;
+			grid-template-columns: minmax(6rem, auto) minmax(0, 1fr);
+			gap: 0.25rem 0.9rem;
+			margin: 0;
+			font-size: 0.78rem;
+		}
+		.kv dt {
+			color: var(--stuic-color-muted-foreground);
+			font-family: var(--mono);
+			font-size: 0.95em;
+		}
+		.kv dd {
+			margin: 0;
+			font-family: var(--mono);
+			font-size: 0.95em;
+			overflow-wrap: anywhere;
+		}
+
+		.chip {
+			display: inline-flex;
+			align-items: center;
+			gap: 0.3rem;
+			padding: 0.1rem 0.45rem;
+			border: 1px solid var(--stuic-color-border);
+			border-radius: 999px;
+			font-size: 0.7rem;
+			font-family: var(--mono);
+			white-space: nowrap;
+		}
+		.chip-ok {
+			border-color: var(--stuic-color-surface-success-border);
+			background: var(--stuic-color-surface-success);
+			color: var(--stuic-color-surface-success-foreground);
+		}
+		.chip-warn {
+			border-color: var(--stuic-color-surface-warning-border);
+			background: var(--stuic-color-surface-warning);
+			color: var(--stuic-color-surface-warning-foreground);
+		}
+		.chip-error {
+			border-color: var(--stuic-color-surface-destructive-border);
+			background: var(--stuic-color-surface-destructive);
+			color: var(--stuic-color-surface-destructive-foreground);
+		}
+		.chip-info {
+			border-color: var(--stuic-color-surface-primary-border);
+			background: var(--stuic-color-surface-primary);
+			color: var(--stuic-color-surface-primary-foreground);
+		}
+
+		/* ---- timeline -------------------------------------------------------- */
+
+		.log {
+			display: flex;
+			flex-direction: column;
+			gap: 0.3rem;
+			max-height: 24rem;
+			overflow-y: auto;
+		}
+		.log-item {
+			display: grid;
+			grid-template-columns: 4.2rem minmax(0, 1fr);
+			gap: 0.6rem;
+			padding: 0.4rem 0.5rem;
+			border-left: 3px solid var(--stuic-color-border);
+			border-radius: 0 calc(var(--radius) - 0.2rem)
+				calc(var(--radius) - 0.2rem) 0;
+			background: var(--stuic-color-background);
+			font-size: 0.78rem;
+		}
+		.log-item.tone-ok {
+			border-left-color: var(--stuic-color-success);
+		}
+		.log-item.tone-warn {
+			border-left-color: var(--stuic-color-warning);
+		}
+		.log-item.tone-error {
+			border-left-color: var(--stuic-color-destructive);
+		}
+		.log-time {
+			font-family: var(--mono);
+			font-size: 0.72rem;
+			font-variant-numeric: tabular-nums;
+			text-align: right;
+			color: var(--stuic-color-muted-foreground);
+		}
+		.log-label {
+			font-family: var(--mono);
+			overflow-wrap: anywhere;
+		}
+		.log-detail {
+			margin-top: 0.15rem;
+			font-size: 0.72rem;
+			color: var(--stuic-color-muted-foreground);
+			overflow-wrap: anywhere;
+		}
+		.log-empty {
+			margin: 0;
+			padding: 1.5rem 0.75rem;
+			border: 1px dashed var(--stuic-color-border);
+			border-radius: calc(var(--radius) - 0.15rem);
+			text-align: center;
+			font-size: 0.8rem;
+			color: var(--stuic-color-muted-foreground);
+		}
+
+		/* ---- wire calls ------------------------------------------------------ */
+
+		.calls {
+			display: flex;
+			flex-direction: column;
+			gap: 0.75rem;
+		}
+		.call-head {
+			display: flex;
+			flex-wrap: wrap;
+			align-items: center;
+			gap: 0.4rem;
+			margin-bottom: 0.35rem;
+			font-size: 0.72rem;
+			color: var(--stuic-color-muted-foreground);
+		}
+
+		/* ---- batch ----------------------------------------------------------- */
+
+		.bar {
+			height: 0.4rem;
+			border-radius: 999px;
+			background: var(--stuic-color-muted);
+			overflow: hidden;
+		}
+		.bar > span {
+			display: block;
+			height: 100%;
+			width: 0;
+			background: var(--stuic-color-primary);
+			transition: width 120ms linear;
+		}
+		.rows {
+			display: flex;
+			flex-direction: column;
+			gap: 0.25rem;
+		}
+		.brow {
+			display: grid;
+			grid-template-columns: 1.6rem minmax(0, 1.1fr) minmax(0, 1fr);
+			align-items: center;
+			gap: 0.6rem;
+			padding: 0.35rem 0.5rem;
+			border: 1px solid var(--stuic-color-border);
+			border-radius: calc(var(--radius) - 0.2rem);
+			background: var(--stuic-color-background);
+			font-size: 0.76rem;
+		}
+		.brow .dot {
+			width: 0.55rem;
+			height: 0.55rem;
+			border-radius: 999px;
+			background: var(--stuic-color-border);
+			justify-self: center;
+		}
+		.brow.is-running .dot {
+			background: var(--stuic-color-warning);
+			animation: pulse 900ms ease-in-out infinite;
+		}
+		.brow.is-ok .dot {
+			background: var(--stuic-color-success);
+		}
+		.brow.is-failed .dot {
+			background: var(--stuic-color-destructive);
+		}
+		@keyframes pulse {
+			50% {
+				opacity: 0.35;
+			}
+		}
+		.brow-in {
+			color: var(--stuic-color-muted-foreground);
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+		.brow-out {
+			font-family: var(--mono);
+			font-size: 0.95em;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+		.brow.is-failed .brow-out {
+			color: var(--stuic-color-destructive);
+		}
+		@media (max-width: 40rem) {
+			.brow {
+				grid-template-columns: 1.6rem minmax(0, 1fr);
+			}
+			.brow-out {
+				grid-column: 2;
+			}
+		}
+
+		.stats {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 0.4rem;
+			margin: 0.6rem 0 0;
+		}
+
+		/* ---- callout (live-provider warning) --------------------------------- */
+
+		.callout {
+			margin: 0.75rem 0 0;
+			padding: 0.55rem 0.7rem;
+			border: 1px solid var(--stuic-color-surface-warning-border);
+			border-radius: calc(var(--radius) - 0.15rem);
+			background: var(--stuic-color-surface-warning);
+			color: var(--stuic-color-surface-warning-foreground);
+			font-size: 0.76rem;
+			line-height: 1.6;
+		}
+		.callout code {
+			font-size: 0.95em;
+		}
+		.callout a {
+			color: inherit;
+		}
+
+		/* ---- footer ---------------------------------------------------------- */
+
+		.info {
+			margin: 2rem 0 0;
+			padding-top: 0.9rem;
+			border-top: 1px solid var(--stuic-color-border);
+			color: var(--stuic-color-muted-foreground);
+			font-size: 0.78rem;
+			line-height: 1.7;
+		}
+		.info a {
+			color: inherit;
+			text-decoration: underline;
+		}
+
+		:where(button, input, select, textarea, a):focus-visible {
+			outline: 2px solid var(--stuic-color-ring);
+			outline-offset: 2px;
+		}
+		[hidden] {
+			display: none !important;
+		}
+		</style>
+	</head>
+	<body>
+		<!-- All markup lives in templates; main.ts clones and wires them. -->
+
+		<template id="tpl-app">
+			<div class="app">
+				<header class="app-header">
+					<div>
+						<h1>
+							<a href="https://github.com/marianmeres/llm-task">
+								<code>@marianmeres/llm-task</code>
+							</a>
+						</h1>
+						<p class="lead">
+							One-shot LLM calls as reusable, typed <strong>task</strong>
+							functions. Everything below runs the <strong>real
+							client</strong> — against the package's own
+							<code>createMockAdapter</code> by default, so it works with
+							no API key and no network. Retries, deadlines, the cache, the
+							schema strategy and the error taxonomy all live in the
+							client, not the adapter, so what you see is what a live call
+							does — and you can <strong>switch the provider to the real
+							Anthropic API</strong> and watch exactly the same thing
+							happen for real.
+						</p>
+					</div>
+					<button
+						type="button"
+						class="theme-toggle"
+						data-on="click:toggleTheme"
+						aria-label="Toggle dark mode"
+						title="Toggle dark mode"
+					>◐</button>
+				</header>
+
+				<nav class="tabs" role="tablist" aria-label="Example sections">
+					<button
+						type="button"
+						role="tab"
+						data-on="click:tab"
+						data-tab="task"
+						aria-selected="true"
+					>Task lab</button>
+					<button
+						type="button"
+						role="tab"
+						data-on="click:tab"
+						data-tab="batch"
+						aria-selected="false"
+					>Batch</button>
+					<button
+						type="button"
+						role="tab"
+						data-on="click:tab"
+						data-tab="cleaners"
+						aria-selected="false"
+					>Cleaners</button>
+				</nav>
+
+				<div data-ref="panels"></div>
+
+				<footer class="info">
+					The mock adapter is scripted, but nothing else is faked — this page
+					imports the package source directly and calls
+					<code>client.task()</code> exactly like server code would. Switching
+					the provider swaps in <code>createAnthropicAdapter()</code> and
+					changes nothing else; a key typed above stays in this tab and is
+					sent only to the provider it authenticates. See
+					<a href="https://jsr.io/@marianmeres/llm-task">JSR</a> ·
+					<a href="https://www.npmjs.com/package/@marianmeres/llm-task">npm</a>
+					·
+					<a href="https://github.com/marianmeres/llm-task">GitHub</a>
+					<span data-ref="version"></span>
+				</footer>
+			</div>
+		</template>
+
+		<!-- ============================ Task lab ============================ -->
+
+		<template id="tpl-task">
+			<section class="cols">
+				<!-- left: configuration -->
+				<div class="stack">
+					<div class="card">
+						<h2>The task</h2>
+						<div class="field">
+							<label for="f-system">system — the instruction</label>
+							<textarea
+								id="f-system"
+								class="mono"
+								rows="4"
+								data-ref="system"
+								data-on="input:setSystem"
+							></textarea>
+							<span class="field-hint">
+								Never concatenated with the input — see the wire request.
+							</span>
+						</div>
+						<div class="field">
+							<label for="f-output">output</label>
+							<select id="f-output" data-ref="output" data-on="change:setOutput">
+								<option value="text">text (string)</option>
+								<option value="json">JSON (Standard Schema)</option>
+							</select>
+						</div>
+						<div class="grid-2">
+							<div class="field">
+								<label for="f-maxtokens">maxTokens</label>
+								<input
+									id="f-maxtokens"
+									type="number"
+									inputmode="numeric"
+									min="1"
+									max="4096"
+									data-ref="maxTokens"
+									data-on="input:setMaxTokens"
+								/>
+							</div>
+							<div class="field">
+								<label for="f-maxinput">maxInputChars</label>
+								<input
+									id="f-maxinput"
+									type="number"
+									inputmode="numeric"
+									min="0"
+									step="10"
+									data-ref="maxInputChars"
+									data-on="input:setMaxInputChars"
+								/>
+							</div>
+						</div>
+						<span class="field-hint">
+							<code>maxInputChars: 0</code> is off. Set it below the input
+							length to fire the <code>onInputTruncated</code> hook.
+						</span>
+					</div>
+
+					<div class="card" data-ref="cleanCard">
+						<h2>clean — output cleaners</h2>
+						<div class="checks" data-ref="cleanList"></div>
+						<p class="card-note">
+							Applied in the listed order, string tasks only. Structured
+							output uses <code>parseJsonLoose</code> instead.
+						</p>
+					</div>
+
+					<div class="card">
+						<h2>Reliability</h2>
+						<div class="grid-2">
+							<div class="field">
+								<label for="f-attempts">retry.attempts</label>
+								<input
+									id="f-attempts"
+									type="number"
+									inputmode="numeric"
+									min="1"
+									max="6"
+									data-ref="attempts"
+									data-on="input:setAttempts"
+								/>
+							</div>
+							<div class="field">
+								<label for="f-timeout">timeoutMs</label>
+								<input
+									id="f-timeout"
+									type="number"
+									inputmode="numeric"
+									min="0"
+									step="500"
+									data-ref="timeout"
+									data-on="input:setTimeout"
+								/>
+							</div>
+						</div>
+						<label class="check">
+							<input
+								type="checkbox"
+								data-ref="allowTruncated"
+								data-on="change:setAllowTruncated"
+							/>
+							<span><code>allowTruncated</code> — accept output cut off at
+								<code>maxTokens</code></span>
+						</label>
+						<label class="check">
+							<input
+								type="checkbox"
+								data-ref="cache"
+								data-on="change:setCache"
+							/>
+							<span><code>cache</code> — reuse identical completions
+								(<span data-ref="cacheSize">0</span> entries)</span>
+						</label>
+					</div>
+
+					<div class="card">
+						<h2>The provider</h2>
+						<div class="field">
+							<label for="f-provider">adapter</label>
+							<select
+								id="f-provider"
+								data-ref="provider"
+								data-on="change:setProvider"
+							></select>
+						</div>
+						<div class="field">
+							<label for="f-model">model</label>
+							<input
+								id="f-model"
+								type="text"
+								list="model-list"
+								data-ref="model"
+								data-on="input:setModel"
+								autocomplete="off"
+								autocapitalize="off"
+								autocorrect="off"
+								spellcheck="false"
+							/>
+							<datalist id="model-list" data-ref="modelList"></datalist>
+						</div>
+
+						<!-- mock: script the provider instead of calling one -->
+						<div data-ref="mockBlock">
+							<div class="field">
+								<label for="f-scenario">scripted behavior</label>
+								<select
+									id="f-scenario"
+									data-ref="scenario"
+									data-on="change:setScenario"
+								></select>
+							</div>
+							<label class="check">
+								<input
+									type="checkbox"
+									data-ref="native"
+									data-on="change:setNative"
+								/>
+								<span><code>capabilities.jsonSchema</code> — provider does
+									native structured output</span>
+							</label>
+							<p class="card-note" data-ref="scenarioNote"></p>
+						</div>
+
+						<!-- live: a real key, a real API -->
+						<div data-ref="liveBlock" hidden>
+							<div class="field">
+								<label for="f-key">
+									API key — <code data-ref="keyEnv"></code> equivalent
+								</label>
+								<input
+									id="f-key"
+									type="password"
+									data-ref="apiKey"
+									data-on="input:setApiKey"
+									autocomplete="off"
+									autocapitalize="off"
+									autocorrect="off"
+									spellcheck="false"
+								/>
+								<span class="field-hint" data-ref="keyHint"></span>
+							</div>
+							<label class="check">
+								<input
+									type="checkbox"
+									data-ref="remember"
+									data-on="change:setRemember"
+								/>
+								<span>keep it in <code>sessionStorage</code> — survives a
+									reload, dies with this tab</span>
+							</label>
+							<div class="actions" style="margin-top: 0.5rem">
+								<button
+									type="button"
+									class="btn btn-sm"
+									data-on="click:forgetKey"
+								>Forget key</button>
+								<span class="spacer"></span>
+								<a
+									class="field-hint"
+									data-ref="keyConsole"
+									target="_blank"
+									rel="noopener"
+								>get a key ↗</a>
+							</div>
+							<p class="callout" data-ref="liveNote"></p>
+						</div>
+					</div>
+				</div>
+
+				<!-- right: input + results -->
+				<div class="stack">
+					<div class="card">
+						<h2>Input — the untrusted part</h2>
+						<div class="field">
+							<label for="f-input">input</label>
+							<textarea
+								id="f-input"
+								rows="4"
+								data-ref="input"
+								data-on="input:setInput; keydown:maybeRun"
+							></textarea>
+						</div>
+						<div class="actions">
+							<button
+								type="button"
+								class="btn btn-primary"
+								data-ref="run"
+								data-on="click:run"
+							>Run task</button>
+							<button
+								type="button"
+								class="btn"
+								data-ref="abort"
+								data-on="click:abort"
+								disabled
+							>Abort</button>
+							<span class="spacer"></span>
+							<button
+								type="button"
+								class="btn btn-sm"
+								data-on="click:clearCache"
+							>Clear cache</button>
+						</div>
+						<p class="card-note" data-ref="runHint"></p>
+					</div>
+
+					<div class="card">
+						<h2>Timeline — the lifecycle hooks firing</h2>
+						<div class="log" data-ref="log"></div>
+						<p class="log-empty" data-ref="logEmpty">
+							Nothing has run yet. Hit <strong>Run task</strong>.
+						</p>
+					</div>
+
+					<div class="card" data-ref="outcomeCard" hidden>
+						<h2 data-ref="outcomeTitle">Result</h2>
+						<div data-ref="outcome"></div>
+					</div>
+
+					<div class="card" data-ref="wireCard" hidden>
+						<h2>What the adapter received — <code>adapter.calls</code></h2>
+						<div class="calls" data-ref="calls"></div>
+						<p class="card-note">
+							<code>system</code> and <code>input</code> are separate fields
+							on every call — the instruction and the untrusted text are
+							never concatenated.
+						</p>
+					</div>
+
+					<div class="card">
+						<h2>The same thing, in your code</h2>
+						<div class="actions" style="margin-bottom: 0.5rem">
+							<span class="spacer"></span>
+							<button
+								type="button"
+								class="btn btn-sm"
+								data-on="click:copySnippet"
+							>Copy</button>
+						</div>
+						<pre class="code" data-ref="snippet"></pre>
+					</div>
+				</div>
+			</section>
+		</template>
+
+		<!-- ============================= Batch ============================== -->
+
+		<template id="tpl-batch">
+			<section class="cols">
+				<div class="stack">
+					<div class="card">
+						<h2>batch()</h2>
+						<p class="card-note" style="margin-top: 0">
+							Map a task over many inputs with bounded concurrency, per-item
+							error isolation and abort passthrough. Results keep input
+							order.
+						</p>
+						<div class="field" style="margin-top: 0.75rem">
+							<label for="f-conc">
+								concurrency — <span data-ref="concOut">4</span>
+							</label>
+							<input
+								id="f-conc"
+								type="range"
+								min="1"
+								max="12"
+								step="1"
+								data-ref="conc"
+								data-on="input:setConcurrency"
+							/>
+							<span class="field-hint">
+								Each mock call takes 400 ms. 12 rows at concurrency 1 vs 12
+								is the whole point.
+							</span>
+						</div>
+						<label class="check" data-ref="liveGate" hidden>
+							<input
+								type="checkbox"
+								data-ref="useLive"
+								data-on="change:setUseLive"
+							/>
+							<span data-ref="liveGateLabel"></span>
+						</label>
+						<div class="actions">
+							<button
+								type="button"
+								class="btn btn-primary"
+								data-ref="run"
+								data-on="click:run"
+							>Run batch</button>
+							<button
+								type="button"
+								class="btn"
+								data-ref="abort"
+								data-on="click:abort"
+								disabled
+							>Abort</button>
+						</div>
+						<p class="card-note">
+							One row is scripted to be refused by the provider — watch it
+							fail on its own without taking the batch down.
+						</p>
+					</div>
+
+					<div class="card">
+						<h2>The same thing, in your code</h2>
+						<pre class="code wrap" data-ref="snippet"></pre>
+					</div>
+				</div>
+
+				<div class="stack">
+					<div class="card">
+						<h2>Progress</h2>
+						<div class="bar"><span data-ref="bar"></span></div>
+						<div class="stats" data-ref="stats"></div>
+					</div>
+					<div class="card">
+						<h2>Rows</h2>
+						<div class="rows" data-ref="rows"></div>
+					</div>
+				</div>
+			</section>
+		</template>
+
+		<!-- ============================ Cleaners ============================ -->
+
+		<template id="tpl-cleaners">
+			<section class="cols">
+				<div class="stack">
+					<div class="card">
+						<h2>Cleaners</h2>
+						<p class="card-note" style="margin-top: 0">
+							Pure string functions — no client, no adapter, nothing async.
+							Models wrap titles in quotes and fences constantly; these
+							unglamorous helpers fix that. Applied in the listed order.
+						</p>
+						<div class="checks" data-ref="list" style="margin-top: 0.75rem">
+						</div>
+					</div>
+					<div class="card">
+						<h2>As a task option</h2>
+						<pre class="code wrap" data-ref="snippet"></pre>
+					</div>
+				</div>
+
+				<div class="stack">
+					<div class="card">
+						<h2>Raw model output</h2>
+						<textarea
+							class="mono"
+							rows="7"
+							data-ref="raw"
+							data-on="input:setRaw"
+						></textarea>
+					</div>
+					<div class="card">
+						<h2>
+							After <code>applyCleaners()</code> —
+							<span data-ref="len" class="chip"></span>
+						</h2>
+						<pre class="code wrap" data-ref="out"></pre>
+					</div>
+				</div>
+			</section>
+		</template>
+
+		<!-- ========================= Item templates ========================= -->
+
+		<template id="tpl-log">
+			<div class="log-item">
+				<span class="log-time" data-ref="time"></span>
+				<div>
+					<div class="log-label" data-ref="label"></div>
+					<div class="log-detail" data-ref="detail" hidden></div>
+				</div>
+			</div>
+		</template>
+
+		<template id="tpl-call">
+			<div>
+				<div class="call-head" data-ref="head"></div>
+				<pre class="code" data-ref="body"></pre>
+			</div>
+		</template>
+
+		<template id="tpl-brow">
+			<div class="brow">
+				<span class="dot"></span>
+				<span class="brow-in" data-ref="in"></span>
+				<span class="brow-out" data-ref="out"></span>
+			</div>
+		</template>
+
+		<template id="tpl-check">
+			<label class="check">
+				<input type="checkbox" data-ref="box" data-on="change:toggle" />
+				<code data-ref="label"></code>
+			</label>
+		</template>
+
+		<div id="app"></div>
+
+		<script type="module" src="./dist/bundle.js"></script>
+	</body>
+</html>
