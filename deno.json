@@ -6,6 +6,7 @@
 		"test": "deno test tests/",
 		"test:watch": "deno test --watch tests/",
 		"test:live": "deno test --allow-net=api.anthropic.com --allow-env --env-file tests/live-smoke.test.ts",
+		"test:live:azure": "deno test --allow-net --allow-env --env-file tests/live-smoke.test.ts",
 		"example:version": "deno run -A scripts/gen-example-version.ts",
 		"example:theme": "deno run -A scripts/gen-example-theme.ts",
 		"example:build": "deno task example:version && deno run -A jsr:@marianmeres/deno-build --root example/src --entry main.ts --outdir example/dist --strict --minify",

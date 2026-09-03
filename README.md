@@ -17,8 +17,10 @@ calling, no embeddings, no streaming (v1) — by design.
 
 - **Task abstraction** — prompt, model, params and output cleanup defined once,
   called like a plain function
-- **Provider adapters** — one unified API; `anthropic` (raw `fetch`, no
-  provider SDK) and `mock` ship in v1, the adapter interface is ~one method
+- **Provider adapters** — one unified API; `anthropic`, `openai`,
+  `azure-openai` and `mock` ship in v1 (raw `fetch`, no provider SDKs), any
+  other OpenAI-compatible endpoint is one config object, and the adapter
+  interface is ~one method
 - **Safe to fail** — normalized error taxonomy (`instanceof`, never
   provider-specific status codes), retries with jitter honoring `Retry-After`,
   per-call deadlines that the retry budget never overshoots
@@ -78,6 +80,120 @@ One-shot escape hatch without defining a task:
 const r = await client.run({ system: "Classify as bug|question|feature.", input });
 ```
 
+## Providers
+
+Three real adapters ship in v1, plus the mock. Each is a thin `fetch` +
+wire-format mapping with no provider SDK; all policy (retries, deadlines, cache,
+schema strategy, error taxonomy) lives in the client, so switching provider
+changes the adapter line and nothing else.
+
+| Factory                                  | Wire format             | Credential (explicit / env)       |
+| ---------------------------------------- | ----------------------- | --------------------------------- |
+| `createAnthropicAdapter()`               | Anthropic Messages      | `apiKey` / `ANTHROPIC_API_KEY`    |
+| `createOpenAIAdapter()`                  | OpenAI Chat Completions | `apiKey` / `OPENAI_API_KEY`       |
+| `createAzureOpenAIAdapter({ endpoint })` | OpenAI Chat Completions | `apiKey` / `AZURE_OPENAI_API_KEY` |
+| `createMockAdapter()`                    | none (in-process)       | none                              |
+
+All three real adapters report
+`{ jsonSchema: true, jsonMode: false, streaming: false }` — native structured
+output on, no `json_object` mode, no streaming in v1.
+
+### OpenAI
+
+```typescript
+import { createLlmClient, createOpenAIAdapter } from "@marianmeres/llm-task";
+
+const client = createLlmClient({
+	adapter: createOpenAIAdapter(), // or { apiKey: "sk-..." }
+	model: "gpt-4.1-mini",
+});
+```
+
+`baseUrl` points the same adapter at a proxy or gateway. The output token limit
+is sent as `max_completion_tokens`; endpoints that still require the legacy
+field need `maxTokensField: "max_tokens"`.
+
+### Azure OpenAI
+
+`model` carries the **deployment name**, not a model id — on Azure the model is
+chosen when the deployment is created. The endpoint is the customer's own
+resource:
+
+```typescript
+import { createAzureOpenAIAdapter, createLlmClient } from "@marianmeres/llm-task";
+
+const client = createLlmClient({
+	adapter: createAzureOpenAIAdapter({
+		endpoint: "https://acme-eu.openai.azure.com",
+		// apiKey omitted -> AZURE_OPENAI_API_KEY, read lazily
+	}),
+	model: "classifier", // deployment name
+});
+```
+
+This targets the `/openai/v1/` surface. Older resources exposing only the
+classic deployment route need `apiVersion`; the deployment then travels in the
+URL instead of the request body:
+
+```typescript
+createAzureOpenAIAdapter({
+	endpoint: "https://acme-eu.openai.azure.com",
+	apiVersion: "2024-10-21",
+});
+```
+
+### Dynamic credentials
+
+An Entra ID service principal, a managed identity or any OAuth flow issues a
+token that expires, while the adapter is constructed once. `getToken()` is
+called once per request and takes precedence over `apiKey` and the environment
+fallback (all three adapters accept it):
+
+```typescript
+const adapter = createAzureOpenAIAdapter({
+	endpoint: "https://acme-eu.openai.azure.com",
+	// cache the token inside your own function — this package does not
+	getToken: async () => (await credential.getToken(scope)).token,
+});
+```
+
+Anything it throws surfaces as `AuthError`, never retried — a broken credential
+source is not a transient condition. On Azure the value is sent in the same
+`api-key` header a static key uses; a resource expecting
+`Authorization: Bearer` instead needs `createOpenAICompatibleAdapter` with its
+own `buildAuthHeaders`.
+
+> **With the cache on, pass `cacheScope`.** One shared adapter with a per-caller
+> token is the natural way to use `getToken`, and the cache key cannot see the
+> token — so without a scope two callers can read each other's completions. See
+> [Caching](#caching).
+
+### Other OpenAI-compatible endpoints
+
+Groq, Together, OpenRouter, Fireworks, GitHub Models and a self-hosted Ollama
+all speak the same Chat Completions format.
+`createOpenAICompatibleAdapter` — the core both factories above are built on —
+is the supported way to reach any of them, without waiting for a release:
+
+```typescript
+import { createOpenAICompatibleAdapter } from "@marianmeres/llm-task";
+
+const groq = createOpenAICompatibleAdapter({
+	id: "groq",
+	fingerprint: "groq", // keeps differing configs apart in a shared cache
+	buildUrl: () => "https://api.groq.com/openai/v1/chat/completions",
+	buildAuthHeaders: (key) => ({ authorization: `Bearer ${key}` }),
+	sendModel: true,
+	resolveKey: () => Deno.env.get("GROQ_API_KEY"),
+	missingKeyMessage: "Missing GROQ_API_KEY.",
+	capabilities: { jsonSchema: false, jsonMode: false, streaming: false },
+});
+```
+
+Set `capabilities.jsonSchema` to what the endpoint actually enforces: `false`
+degrades structured tasks to the prompt strategy (still validated client-side)
+rather than sending a `response_format` the endpoint would reject.
+
 ## Structured output
 
 Opt-in via `schema` — it changes the task's return type. Any
@@ -116,13 +232,18 @@ On a failed parse/validation the client resends **once** with the validation
 errors appended; a second failure throws `OutputValidationError` (with `text` +
 `issues`). Never a loop.
 
-> The Anthropic adapter automatically normalizes the wire schema to Anthropic's
-> structured output restrictions (`additionalProperties: false` everywhere,
-> unsupported constraints like `minLength`/`minimum` stripped). With a Standard
+> Every real adapter normalizes the wire schema to its provider's structured
+> output restrictions automatically: `additionalProperties: false` everywhere,
+> unsupported constraints like `minLength`/`minimum` stripped. With a Standard
 > Schema validator configured, the stripped constraints are still enforced
 > client-side. Record/map schemas (schema-valued `additionalProperties`, e.g.
 > `z.record(...)`) cannot be expressed under these restrictions and are rejected
 > with `InvalidRequestError` instead of being silently rewritten.
+>
+> OpenAI/Azure strict mode additionally permits no optional keys, so an optional
+> property is widened to accept `null` and listed as required — that is how
+> strict mode expresses optionality. A `null` where your schema wanted a missing
+> key fails client-side validation and costs the one repair round-trip.
 
 ## Error handling
 
@@ -237,6 +358,19 @@ Only clean
 parsing, validation) re-runs on hits — so task config can change without stale
 values.
 
+The fingerprint is fixed at construction, so it cannot distinguish callers of an
+adapter whose credential varies per call (`getToken()`). Those callers partition
+the cache themselves, per call:
+
+```typescript
+await toTitle(input, { cacheScope: user.id });
+```
+
+`cacheScope` is opaque and mixed into the key. It is documented, not enforced:
+omitting it reproduces the previous keying exactly (nothing changes for a static
+credential), but with a per-caller token and the cache on, omitting it means
+callers share completions.
+
 ## Hooks & logging
 
 Wire your own logging/tracing/metrics via lifecycle hooks (client- and/or
@@ -260,17 +394,29 @@ const client = createLlmClient({
 
 ## API key resolution & Deno permissions
 
-1. An explicit `apiKey` in `createAnthropicAdapter({ apiKey })` **always wins**
-   and never touches the environment (no `--allow-env` prompt, no Workers
-   crash).
-2. Otherwise the `ANTHROPIC_API_KEY` environment variable is read **lazily**
-   (first call, not import time). In Deno it is only read when permission was
-   explicitly granted — the package never triggers an interactive prompt.
+Every adapter resolves its credential per request, in this order:
 
-Required Deno permissions: `--allow-net=api.anthropic.com`, plus
-`--allow-env=ANTHROPIC_API_KEY` only when relying on the env fallback.
+1. `getToken()`, when configured — awaited on every call.
+2. An explicit `apiKey` in `createAnthropicAdapter({ apiKey })` (or the OpenAI /
+   Azure equivalent), which **always wins** over the environment and never
+   touches it (no `--allow-env` prompt, no Workers crash).
+3. The adapter's environment variable — `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or
+   `AZURE_OPENAI_API_KEY` — read **lazily** (first call, not import time). In
+   Deno it is only read when permission was explicitly granted; the package never
+   triggers an interactive prompt.
+
+All three yielding nothing is an `AuthError` naming both the option and the
+variable.
+
+Required Deno permissions: `--allow-net` for the provider host
+(`api.anthropic.com`, `api.openai.com`, or your own Azure resource), plus
+`--allow-env=<THAT_VARIABLE>` only when relying on the env fallback.
 
 ## Writing a custom adapter
+
+For an endpoint speaking the OpenAI Chat Completions format, use
+[`createOpenAICompatibleAdapter`](#other-openai-compatible-endpoints) instead —
+this section is for a provider with its own wire format.
 
 An adapter is one method — thin `fetch` + wire-format mapping (~40 lines); all
 policy lives in the client. Map provider errors with the shared
@@ -394,8 +540,9 @@ handling and the generated snippet are all driven off that list.
 ## Testing this package
 
 ```sh
-deno task test        # offline: fetch stub + mock adapter, no permissions
-deno task test:live   # opt-in live smoke test (needs ANTHROPIC_API_KEY / .env)
+deno task test              # offline: fetch stub + mock adapter, no permissions
+deno task test:live         # opt-in live smoke test (needs ANTHROPIC_API_KEY / .env)
+deno task test:live:azure   # same file incl. the Azure case (AZURE_OPENAI_* / .env)
 ```
 
 ## API Reference

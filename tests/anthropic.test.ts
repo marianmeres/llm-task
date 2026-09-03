@@ -196,6 +196,40 @@ Deno.test("anthropic: missing api key throws AuthError without fetch", async () 
 	assertEquals(calls.length, 0);
 });
 
+Deno.test(
+	"anthropic: getToken wins over apiKey and is called once per request",
+	async () => {
+		const { fetch, calls } = makeFetch(() => okBody());
+		let issued = 0;
+		const adapter = createAnthropicAdapter({
+			apiKey: "sk-ant-static",
+			getToken: () => Promise.resolve(`tok-${++issued}`),
+			fetch,
+		});
+		await adapter.complete({ ...req });
+		await adapter.complete({ ...req });
+		assertEquals(issued, 2);
+		assertEquals(calls[0].headers["x-api-key"], "tok-1");
+		assertEquals(calls[1].headers["x-api-key"], "tok-2");
+	},
+);
+
+Deno.test("anthropic: a failing getToken surfaces as AuthError", async () => {
+	const { fetch, calls } = makeFetch(() => okBody());
+	const boom = new Error("gateway token exchange refused");
+	const adapter = createAnthropicAdapter({
+		getToken: () => {
+			throw boom;
+		},
+		fetch,
+	});
+	const e = await assertRejects(() => adapter.complete({ ...req }), AuthError);
+	assertEquals(e.cause, boom);
+	assertEquals(e.retryable, false);
+	assertStringIncludes(e.message, "gateway token exchange refused");
+	assertEquals(calls.length, 0);
+});
+
 Deno.test("anthropic: maps 401 to AuthError", async () => {
 	const { fetch } = makeFetch(() =>
 		errBody(401, "authentication_error", "invalid x-api-key")

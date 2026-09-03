@@ -23,6 +23,7 @@ import {
 	TruncatedOutputError,
 } from "../src/errors.ts";
 import type { JsonSchema, StandardSchemaV1 } from "../src/schema.ts";
+import { sha256Hex, stableStringify } from "../src/utils.ts";
 import { fakeSchema } from "./schema.test.ts";
 
 Deno.test("task returns cleaned string value", async () => {
@@ -523,4 +524,51 @@ Deno.test("cache: same id but different fingerprint never collides", async () =>
 	assertEquals(await c1.task({})("x"), "one");
 	assertEquals(await c2.task({})("x"), "two");
 	assertEquals(a2.calls.length, 1, "must not be served adapter 1's entry");
+});
+
+Deno.test("cacheScope: different scopes never share an entry", async () => {
+	const cache = createMemoryCache();
+	const adapter = createMockAdapter({ respond: "v" });
+	const client = createLlmClient({ adapter, model: "m", cache });
+	const t = client.task({});
+	await t("x", { cacheScope: "user-1" });
+	await t("x", { cacheScope: "user-2" });
+	assertEquals(adapter.calls.length, 2);
+	assertEquals(cache.size, 2);
+});
+
+Deno.test("cacheScope: the same scope hits the cache", async () => {
+	const adapter = createMockAdapter({ respond: "v" });
+	const client = createLlmClient({
+		adapter,
+		model: "m",
+		cache: createMemoryCache(),
+	});
+	const t = client.task({});
+	const r1 = await t.run("x", { cacheScope: "user-1" });
+	const r2 = await t.run("x", { cacheScope: "user-1" });
+	assertEquals(adapter.calls.length, 1);
+	assertEquals(r1.cached, false);
+	assertEquals(r2.cached, true);
+	assertEquals(r2.value, "v");
+});
+
+Deno.test("cacheScope: omitting it keys exactly as before", async () => {
+	const cache = createMemoryCache();
+	const adapter = createMockAdapter({ respond: "v" });
+	const client = createLlmClient({ adapter, model: "m", cache });
+	await client.task({ system: "s" })("x");
+	// the pre-cacheScope recipe, spelled out: an unsupplied scope must not
+	// reach the hash at all, or every existing cache entry silently misses
+	const legacyKey = await sha256Hex(stableStringify({
+		adapter: "mock",
+		fingerprint: null,
+		model: "m",
+		system: "s",
+		input: "x",
+		maxTokens: 1024,
+		temperature: null,
+		jsonSchema: null,
+	}));
+	assertEquals(cache.get(legacyKey)?.text, "v");
 });

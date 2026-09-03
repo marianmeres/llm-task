@@ -32,6 +32,14 @@ export interface AnthropicAdapterOptions {
 	 */
 	apiKey?: string;
 	/**
+	 * Dynamic credential source, called once per request. Takes precedence over
+	 * `apiKey` and the environment fallback. An Anthropic key is static in
+	 * practice, so this exists for a token-authenticating gateway sitting in
+	 * front of the API — do your own caching inside it; this package does not
+	 * cache the token. Throwing surfaces as `AuthError`.
+	 */
+	getToken?: () => string | Promise<string>;
+	/**
 	 * API base URL (no trailing slash).
 	 * @default "https://api.anthropic.com"
 	 */
@@ -93,7 +101,18 @@ export function createAnthropicAdapter(options: AnthropicAdapterOptions = {}): A
 		fingerprint: `${baseUrl}|${version}|${stableStringify(options.headers ?? {})}`,
 		capabilities: { jsonSchema: true, jsonMode: false, streaming: false },
 		async complete(req: CompletionRequest): Promise<CompletionResult> {
-			const apiKey = options.apiKey ?? readEnv("ANTHROPIC_API_KEY");
+			let apiKey: string | undefined;
+			try {
+				apiKey = await (options.getToken?.() ?? options.apiKey ??
+					readEnv("ANTHROPIC_API_KEY"));
+			} catch (e) {
+				// a broken credential source belongs in the same taxonomy as a
+				// missing key — and is not retryable
+				throw new AuthError(
+					`${ADAPTER_ID} credential lookup failed: ${getErrorMessage(e)}`,
+					{ adapter: ADAPTER_ID, cause: e },
+				);
+			}
 			if (!apiKey) {
 				throw new AuthError(
 					"Missing Anthropic API key — pass `apiKey` to createAnthropicAdapter() " +
