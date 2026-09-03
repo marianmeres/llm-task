@@ -8,6 +8,9 @@ Complete reference for `@marianmeres/llm-task`.
 
 - [`createLlmClient(config)`](#createllmclientconfig-llmclient)
 - [`createAnthropicAdapter(options?)`](#createanthropicadapteroptions-adapter)
+- [`createOpenAIAdapter(options?)`](#createopenaiadapteroptions-adapter)
+- [`createAzureOpenAIAdapter(options)`](#createazureopenaiadapteroptions-adapter)
+- [`createOpenAICompatibleAdapter(config)`](#createopenaicompatibleadapterconfig-adapter)
 - [`createMockAdapter(options?)`](#createmockadapteroptions-mockadapter)
 - [`createMemoryCache(options?)`](#creatememorycacheoptions-memorycache)
 
@@ -98,7 +101,10 @@ Defines a reusable task. The return type follows the config:
 - `await task.run(input, options?)` → `TaskResult<T>` (full envelope)
 
 Per-call `options` (`TaskRunOptions`): `signal`, `model`, `maxTokens`,
-`temperature`, `timeoutMs`, `cache`.
+`temperature`, `timeoutMs`, `cache`, `cacheScope` (opaque per-call cache
+partition — mix in the caller identity when the adapter's credential varies per
+call and the cache is on; see
+[README](./README.md#caching)).
 
 **Example:**
 
@@ -131,13 +137,14 @@ SDK dependency). Capabilities: `{ jsonSchema: true, jsonMode: false, streaming: 
 
 **Parameters** (`AnthropicAdapterOptions`):
 
-| Option    | Type                     | Default                                         | Description                                                 |
-| --------- | ------------------------ | ----------------------------------------------- | ----------------------------------------------------------- |
-| `apiKey`  | `string`                 | env `ANTHROPIC_API_KEY` (lazy)                  | explicit key always wins and never touches the environment  |
-| `baseUrl` | `string`                 | `"https://api.anthropic.com"`                   | API base URL (proxies, gateways)                            |
-| `version` | `string`                 | `"2023-06-01"`                                  | `anthropic-version` header                                  |
-| `headers` | `Record<string, string>` | —                                               | extra headers (e.g. `anthropic-beta`), merged over defaults |
-| `fetch`   | `typeof fetch`           | `fetchOrThrow` (from `@marianmeres/http-utils`) | injectable fetch for tests                                  |
+| Option     | Type                              | Default                                         | Description                                                      |
+| ---------- | --------------------------------- | ----------------------------------------------- | ---------------------------------------------------------------- |
+| `apiKey`   | `string`                          | env `ANTHROPIC_API_KEY` (lazy)                  | explicit key always wins and never touches the environment       |
+| `getToken` | `() => string \| Promise<string>` | —                                               | dynamic credential, awaited once per request; wins over `apiKey` |
+| `baseUrl`  | `string`                          | `"https://api.anthropic.com"`                   | API base URL (proxies, gateways)                                 |
+| `version`  | `string`                          | `"2023-06-01"`                                  | `anthropic-version` header                                       |
+| `headers`  | `Record<string, string>`          | —                                               | extra headers (e.g. `anthropic-beta`), merged over defaults      |
+| `fetch`    | `typeof fetch`                    | `fetchOrThrow` (from `@marianmeres/http-utils`) | injectable fetch for tests                                       |
 
 Behavior notes:
 
@@ -150,6 +157,9 @@ Behavior notes:
 - Error mapping: 401/403 → `AuthError`, 429 → `RateLimitError` (+`retryAfter`),
   413 or context-length 400 → `ContextLengthError`, other 400-class →
   `InvalidRequestError`, 5xx/529/network → `TransientError`.
+- Credential resolution per request: `getToken()` → `apiKey` →
+  `ANTHROPIC_API_KEY`; a `getToken` that throws surfaces as a non-retryable
+  `AuthError`, as does all three yielding nothing.
 - Sets `Adapter.fingerprint` from `baseUrl` + `version` + `headers`, so
   differently configured instances never share client cache entries.
 
@@ -165,6 +175,157 @@ restrictions instead of silently rewriting them: a schema-valued
 `additionalProperties` (record/map schemas, e.g. `z.record(...)`) or an object
 schema whose only property mechanism is `patternProperties`. Restructure such
 data (e.g. an array of `{ key, value }` objects) or drop the wire schema.
+
+---
+
+### `createOpenAIAdapter(options?): Adapter`
+
+OpenAI Chat Completions adapter (`POST {baseUrl}/chat/completions`, raw `fetch`,
+no SDK dependency). Capabilities:
+`{ jsonSchema: true, jsonMode: false, streaming: false }`.
+
+**Parameters** (`OpenAIAdapterOptions`):
+
+| Option           | Type                                      | Default                                         | Description                                                      |
+| ---------------- | ----------------------------------------- | ----------------------------------------------- | ---------------------------------------------------------------- |
+| `apiKey`         | `string`                                  | env `OPENAI_API_KEY` (lazy)                     | explicit key always wins and never touches the environment       |
+| `getToken`       | `() => string \| Promise<string>`         | —                                               | dynamic credential, awaited once per request; wins over `apiKey` |
+| `baseUrl`        | `string`                                  | `"https://api.openai.com/v1"`                   | API base URL, no trailing slash (proxies, gateways)              |
+| `maxTokensField` | `"max_tokens" \| "max_completion_tokens"` | `"max_completion_tokens"`                       | output token limit field name on the wire                        |
+| `headers`        | `Record<string, string>`                  | —                                               | extra headers (e.g. `openai-organization`), merged over defaults |
+| `fetch`          | `typeof fetch`                            | `fetchOrThrow` (from `@marianmeres/http-utils`) | injectable fetch for tests                                       |
+
+**Example:**
+
+```typescript
+const client = createLlmClient({
+	adapter: createOpenAIAdapter(), // or { apiKey: "sk-..." }
+	model: "gpt-4.1-mini",
+});
+```
+
+Behavior notes:
+
+- `system` and `input` travel as two separate messages (`system` then `user`),
+  never concatenated.
+- Native structured output via `response_format: { type: "json_schema", strict: true }`;
+  the schema is normalized first (see `normalizeOpenAiJsonSchema`).
+- `finish_reason` mapping: `stop` → `"stop"`, `length` → `"length"`,
+  `content_filter` → `"content_filter"`, anything else → `"other"`. A `null`
+  `message.content` (refusal, tool-only turn) becomes `""`.
+- Error mapping: 401/403 → `AuthError`, 429 → `RateLimitError` (+`retryAfter`),
+  a 400 whose `error.code` is `context_length_exceeded` (or whose message names
+  the context length) → `ContextLengthError`, other 400-class →
+  `InvalidRequestError`, 5xx/network → `TransientError`. A 2xx with a non-JSON
+  body is also a `TransientError` — a gateway artifact, not a `SyntaxError` for
+  the caller to handle.
+- Sets `Adapter.fingerprint` from `baseUrl` + `maxTokensField` + `headers`.
+
+### `createAzureOpenAIAdapter(options): Adapter`
+
+Azure OpenAI adapter — the same Chat Completions core with Azure's URL shape and
+`api-key` header. Capabilities:
+`{ jsonSchema: true, jsonMode: false, streaming: false }`.
+
+`CompletionRequest.model` carries the **deployment name**, not a model id: on
+Azure the model is chosen when the deployment is created.
+
+**Parameters** (`AzureOpenAIAdapterOptions`):
+
+| Option           | Type                                      | Default                                         | Description                                                               |
+| ---------------- | ----------------------------------------- | ----------------------------------------------- | ------------------------------------------------------------------------- |
+| `endpoint`       | `string`                                  | — (required)                                    | resource endpoint, e.g. `"https://acme-eu.openai.azure.com"`              |
+| `apiKey`         | `string`                                  | env `AZURE_OPENAI_API_KEY` (lazy)               | explicit key always wins and never touches the environment                |
+| `getToken`       | `() => string \| Promise<string>`         | —                                               | dynamic credential (Entra ID, managed identity), awaited once per request |
+| `apiVersion`     | `string`                                  | —                                               | when set, uses the classic deployment route and sends `api-version`       |
+| `maxTokensField` | `"max_tokens" \| "max_completion_tokens"` | `"max_completion_tokens"`                       | output token limit field name on the wire                                 |
+| `headers`        | `Record<string, string>`                  | —                                               | extra headers, merged over defaults                                       |
+| `fetch`          | `typeof fetch`                            | `fetchOrThrow` (from `@marianmeres/http-utils`) | injectable fetch for tests                                                |
+
+**Example:**
+
+```typescript
+const client = createLlmClient({
+	adapter: createAzureOpenAIAdapter({
+		endpoint: "https://acme-eu.openai.azure.com",
+	}),
+	model: "classifier", // deployment name
+});
+```
+
+Behavior notes:
+
+- Without `apiVersion`: `POST {endpoint}/openai/v1/chat/completions`, deployment
+  sent as `model` in the body.
+- With `apiVersion`:
+  `POST {endpoint}/openai/deployments/{deployment}/chat/completions?api-version=...`,
+  `model` omitted from the body (the URL addresses the deployment).
+- `getToken()` output is sent in the same `api-key` header a static key uses. A
+  resource expecting `Authorization: Bearer` needs
+  `createOpenAICompatibleAdapter` with its own `buildAuthHeaders`.
+- Response, error and schema handling are identical to
+  `createOpenAIAdapter`.
+- Sets `Adapter.fingerprint` from `endpoint` + `apiVersion` + `maxTokensField` +
+  `headers`, so two resources never share client cache entries.
+
+### `createOpenAICompatibleAdapter(config): Adapter`
+
+The parameterized core behind both factories above — an adapter for any endpoint
+speaking the OpenAI Chat Completions wire format (Groq, Together, OpenRouter,
+Fireworks, GitHub Models, a self-hosted Ollama, ...). Public and supported: it
+is the way to reach a provider this package ships no dedicated factory for.
+
+**Parameters** (`OpenAICompatibleConfig`):
+
+| Option              | Type                                                        | Default                   | Description                                                                            |
+| ------------------- | ----------------------------------------------------------- | ------------------------- | -------------------------------------------------------------------------------------- |
+| `id`                | `string`                                                    | — (required)              | stable adapter id (error metadata, cache keys)                                         |
+| `fingerprint`       | `string`                                                    | — (required)              | distinguishes instances sharing an `id`; must cover everything that changes the answer |
+| `buildUrl`          | `(model: string) => string`                                 | — (required)              | full request URL for a model/deployment                                                |
+| `buildAuthHeaders`  | `(key: string) => Record<string, string>`                   | — (required)              | auth headers for the resolved credential                                               |
+| `sendModel`         | `boolean`                                                   | — (required)              | whether to send `model` in the body                                                    |
+| `resolveKey`        | `() => string \| undefined \| Promise<string \| undefined>` | — (required)              | lazy per-request credential lookup; throwing surfaces as `AuthError`                   |
+| `missingKeyMessage` | `string`                                                    | — (required)              | `AuthError` message when `resolveKey` yields nothing                                   |
+| `capabilities`      | `AdapterCapabilities`                                       | — (required)              | what the endpoint natively supports (drives the client's schema strategy)              |
+| `maxTokensField`    | `"max_tokens" \| "max_completion_tokens"`                   | `"max_completion_tokens"` | output token limit field name on the wire                                              |
+| `headers`           | `Record<string, string>`                                    | —                         | extra headers, merged over defaults                                                    |
+| `fetch`             | `typeof fetch`                                              | `fetchOrThrow`            | injectable fetch for tests                                                             |
+
+**Example:**
+
+```typescript
+const groq = createOpenAICompatibleAdapter({
+	id: "groq",
+	fingerprint: "groq",
+	buildUrl: () => "https://api.groq.com/openai/v1/chat/completions",
+	buildAuthHeaders: (key) => ({ authorization: `Bearer ${key}` }),
+	sendModel: true,
+	resolveKey: () => Deno.env.get("GROQ_API_KEY"),
+	missingKeyMessage: "Missing GROQ_API_KEY.",
+	capabilities: { jsonSchema: false, jsonMode: false, streaming: false },
+});
+```
+
+`capabilities.jsonSchema: false` degrades structured tasks to the prompt
+strategy (still parsed and validated client-side) instead of sending a
+`response_format` the endpoint would reject.
+
+### `normalizeOpenAiJsonSchema(schema, adapterId?): JsonSchema`
+
+Exported for testing/inspection; applied automatically by the OpenAI and Azure
+adapters. Normalizes a JSON Schema to OpenAI strict mode: recursively sets
+`additionalProperties: false` on object schemas, strips unsupported constraint
+keywords (`minimum`, `maxLength`, `pattern`, `format`, `minItems`, ...), and —
+since strict mode permits no optional keys — lists every property in `required`,
+widening the previously optional ones to accept `null`. Only a declared `type`
+can be widened that way; a `$ref`-valued optional property becomes required
+as-is.
+
+**Throws** `InvalidRequestError` (reported under `adapterId`, default
+`"openai"`) for schemas whose meaning cannot survive the restrictions, rather
+than silently rewriting them: a schema-valued `additionalProperties` (record/map
+schemas, e.g. `z.record(...)`) or an object schema whose only property mechanism
+is `patternProperties`.
 
 ---
 
@@ -356,6 +517,9 @@ interface CompletionResult {
 	model: string;
 	raw: unknown; // never swallowed
 }
+
+// the OpenAI-shaped adapters' output token limit field name
+type MaxTokensField = "max_tokens" | "max_completion_tokens";
 ```
 
 ### Cache types

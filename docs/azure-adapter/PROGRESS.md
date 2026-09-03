@@ -29,7 +29,7 @@ Verify: deno fmt --check src/ tests/
 | ✅     | T04 | T03         | `getToken()` dynamic-credential option across the adapters             | [02](./02-adapter-contract-extensions.md) #1 | —      |
 | ✅     | T05 | T04         | `cacheScope` on `TaskRunOptions` for dynamic-identity adapters         | [02](./02-adapter-contract-extensions.md) #2 | —      |
 | ✅     | T09 | T03         | Live smoke test against a real Azure deployment                        | [03](./03-surface-docs-and-example.md) #4    | —      |
-| ⬜     | T06 | T03 T04 T05 | README + API.md: document all three real adapters                      | [03](./03-surface-docs-and-example.md) #1    | —      |
+| ✅     | T06 | T03 T04 T05 | README + API.md: document all three real adapters                      | [03](./03-surface-docs-and-example.md) #1    | —      |
 | ⬜     | T07 | T03 T04 T05 | AGENTS.md: wire format, contract extensions, no-Azure-in-example note  | [03](./03-surface-docs-and-example.md) #2    | —      |
 
 Each row includes its own tests and its `src/mod.ts` export line — one reviewable commit per
