@@ -1,7 +1,14 @@
-import { assert, assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+	assert,
+	assertEquals,
+	assertRejects,
+	assertStringIncludes,
+	assertThrows,
+} from "@std/assert";
 import {
 	createOpenAIAdapter,
 	createOpenAICompatibleAdapter,
+	normalizeOpenAiJsonSchema,
 } from "../src/adapters/openai.ts";
 import {
 	AuthError,
@@ -313,11 +320,37 @@ Deno.test("openai: abort passes through untouched", async () => {
 	assertEquals(e, reason);
 });
 
-Deno.test("openai: declares no native structured output yet", () => {
+Deno.test("openai: declares native structured output", () => {
 	assertEquals(createOpenAIAdapter({ apiKey: "k" }).capabilities, {
-		jsonSchema: false,
+		jsonSchema: true,
 		jsonMode: false,
 		streaming: false,
+	});
+});
+
+Deno.test("openai: sends normalized strict response_format for jsonSchema", async () => {
+	const { fetch, calls } = makeFetch(() => okBody());
+	const adapter = createOpenAIAdapter({ apiKey: "sk-test", fetch });
+	await adapter.complete({
+		...req,
+		jsonSchema: {
+			type: "object",
+			properties: { n: { type: "number", minimum: 0 } },
+			required: ["n"],
+		},
+	});
+	assertEquals(calls[0].body.response_format, {
+		type: "json_schema",
+		json_schema: {
+			name: "output",
+			strict: true,
+			schema: {
+				type: "object",
+				properties: { n: { type: "number" } },
+				required: ["n"],
+				additionalProperties: false,
+			},
+		},
 	});
 });
 
@@ -387,4 +420,143 @@ Deno.test("openai-compatible: resolveKey is lazy and per request", async () => {
 
 	key = "late";
 	assertEquals((await adapter.complete({ ...req })).text, "Hello");
+});
+
+// -- strict-mode schema normalizer --------------------------------------------
+
+Deno.test("normalizeOpenAiJsonSchema strips unsupported keywords recursively", () => {
+	assertEquals(
+		normalizeOpenAiJsonSchema({
+			type: "object",
+			properties: {
+				name: { type: "string", minLength: 1, maxLength: 10, pattern: "^a" },
+				tags: {
+					type: "array",
+					minItems: 1,
+					uniqueItems: true,
+					items: {
+						type: "object",
+						properties: { id: { type: "integer" } },
+						required: ["id"],
+					},
+				},
+				choice: {
+					anyOf: [{ type: "string" }, { type: "number", multipleOf: 2 }],
+				},
+				when: { type: "string", format: "date-time" },
+			},
+			required: ["name", "tags", "choice", "when"],
+		}),
+		{
+			type: "object",
+			properties: {
+				name: { type: "string" },
+				tags: {
+					type: "array",
+					items: {
+						type: "object",
+						properties: { id: { type: "integer" } },
+						required: ["id"],
+						additionalProperties: false,
+					},
+				},
+				choice: { anyOf: [{ type: "string" }, { type: "number" }] },
+				when: { type: "string" },
+			},
+			required: ["name", "tags", "choice", "when"],
+			additionalProperties: false,
+		},
+	);
+});
+
+Deno.test("normalizeOpenAiJsonSchema requires every property, widening optionals", () => {
+	assertEquals(
+		normalizeOpenAiJsonSchema({
+			type: "object",
+			properties: {
+				a: { type: "string" },
+				b: { type: "number", description: "optional" },
+				c: { type: ["string", "boolean"] },
+				d: { type: ["string", "null"] },
+				e: { $ref: "#/$defs/Thing" },
+			},
+			required: ["a"],
+			$defs: {
+				Thing: { type: "object", properties: { id: { type: "string" } } },
+			},
+		}),
+		{
+			type: "object",
+			properties: {
+				a: { type: "string" },
+				b: { type: ["number", "null"], description: "optional" },
+				c: { type: ["string", "boolean", "null"] },
+				d: { type: ["string", "null"] },
+				// no declared type to widen — required as-is
+				e: { $ref: "#/$defs/Thing" },
+			},
+			required: ["a", "b", "c", "d", "e"],
+			additionalProperties: false,
+			$defs: {
+				Thing: {
+					type: "object",
+					properties: { id: { type: ["string", "null"] } },
+					required: ["id"],
+					additionalProperties: false,
+				},
+			},
+		},
+	);
+});
+
+Deno.test("normalizeOpenAiJsonSchema rejects record/map schemas", () => {
+	assertThrows(
+		() =>
+			normalizeOpenAiJsonSchema({
+				type: "object",
+				additionalProperties: { type: "string" },
+			}),
+		InvalidRequestError,
+		"record/map schemas",
+	);
+	assertThrows(
+		() =>
+			normalizeOpenAiJsonSchema({
+				type: "object",
+				patternProperties: { "^x": { type: "string" } },
+			}),
+		InvalidRequestError,
+		"patternProperties",
+	);
+	// nested is rejected too, and the adapter id is carried on the error
+	const e = assertThrows(
+		() =>
+			normalizeOpenAiJsonSchema({
+				type: "object",
+				properties: {
+					meta: { type: "object", additionalProperties: { type: "number" } },
+				},
+			}, "azure-openai"),
+		InvalidRequestError,
+	);
+	assertEquals(e.adapter, "azure-openai");
+	// an explicit `additionalProperties: false` is fine
+	assertEquals(
+		normalizeOpenAiJsonSchema({ type: "object", additionalProperties: false }),
+		{ type: "object", additionalProperties: false },
+	);
+});
+
+Deno.test("openai: schema rejection surfaces before the request is sent", async () => {
+	const { fetch, calls } = makeFetch(() => okBody());
+	const adapter = createOpenAIAdapter({ apiKey: "k", fetch });
+	await assertRejects(
+		() =>
+			adapter.complete({
+				...req,
+				jsonSchema: { type: "object", additionalProperties: { type: "string" } },
+			}),
+		InvalidRequestError,
+	);
+	assertEquals(calls.length, 0);
 });

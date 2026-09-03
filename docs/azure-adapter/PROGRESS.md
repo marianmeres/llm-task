@@ -24,7 +24,7 @@ Verify: deno fmt --check src/ tests/
 | Status | ID  | Deps        | Task                                                                   | Source                                       | Commit |
 | ------ | --- | ----------- | ---------------------------------------------------------------------- | -------------------------------------------- | ------ |
 | ✅     | T01 | —           | OpenAI-compatible core + `createOpenAIAdapter`, no native schema yet   | [01](./01-openai-compatible-adapter.md) #1   | —      |
-| ⬜     | T02 | T01         | OpenAI strict-mode schema normaliser; enable `capabilities.jsonSchema` | [01](./01-openai-compatible-adapter.md) #2   | —      |
+| ✅     | T02 | T01         | OpenAI strict-mode schema normaliser; enable `capabilities.jsonSchema` | [01](./01-openai-compatible-adapter.md) #2   | —      |
 | ⬜     | T03 | T02         | `createAzureOpenAIAdapter` over the core                               | [01](./01-openai-compatible-adapter.md) #3   | —      |
 | ⬜     | T04 | T03         | `getToken()` dynamic-credential option across the adapters             | [02](./02-adapter-contract-extensions.md) #1 | —      |
 | ⬜     | T05 | T04         | `cacheScope` on `TaskRunOptions` for dynamic-identity adapters         | [02](./02-adapter-contract-extensions.md) #2 | —      |

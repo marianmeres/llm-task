@@ -20,9 +20,11 @@ import {
 	AuthError,
 	ContextLengthError,
 	errorFromHttpStatus,
+	InvalidRequestError,
 	parseRetryAfter,
 	TransientError,
 } from "../errors.ts";
+import type { JsonSchema } from "../schema.ts";
 import { isAbortLike, readEnv, stableStringify } from "../utils.ts";
 
 /** Name of the output token limit field on the wire. */
@@ -124,6 +126,16 @@ export function createOpenAICompatibleAdapter(config: OpenAICompatibleConfig): A
 			};
 			if (config.sendModel) body.model = req.model;
 			if (req.temperature !== undefined) body.temperature = req.temperature;
+			if (req.jsonSchema) {
+				body.response_format = {
+					type: "json_schema",
+					json_schema: {
+						name: "output",
+						strict: true,
+						schema: normalizeOpenAiJsonSchema(req.jsonSchema, config.id),
+					},
+				};
+			}
 
 			let response: Response;
 			try {
@@ -222,8 +234,9 @@ const OPENAI_ADAPTER_ID = "openai";
 /**
  * Creates the OpenAI Chat Completions adapter.
  *
- * Structured tasks use the client's prompt-instruction strategy (the schema is
- * described in the prompt and validated client-side).
+ * Supports native structured output (`response_format` strict JSON schema) —
+ * the schema is normalized to strict mode's restrictions automatically, see
+ * {@link normalizeOpenAiJsonSchema}.
  *
  * @example
  * ```typescript
@@ -254,7 +267,7 @@ export function createOpenAIAdapter(options: OpenAIAdapterOptions = {}): Adapter
 		maxTokensField,
 		headers: options.headers,
 		fetch: options.fetch,
-		capabilities: { jsonSchema: false, jsonMode: false, streaming: false },
+		capabilities: { jsonSchema: true, jsonMode: false, streaming: false },
 	});
 }
 
@@ -312,4 +325,147 @@ async function toLlmError(response: Response, adapterId: string): Promise<Error>
 		...opts,
 		retryAfter: parseRetryAfter(response.headers.get("retry-after")),
 	});
+}
+
+/**
+ * JSON Schema keywords OpenAI strict mode does not support — stripped before
+ * sending. When a Standard Schema validator is configured on the task, these
+ * constraints are still enforced client-side after parsing.
+ *
+ * Deliberately errs on the side of stripping: a keyword an endpoint would have
+ * accepted costs only a lost hint to the model, while one it rejects fails the
+ * whole request with an opaque 400.
+ */
+const UNSUPPORTED_SCHEMA_KEYWORDS = [
+	"minimum",
+	"maximum",
+	"exclusiveMinimum",
+	"exclusiveMaximum",
+	"multipleOf",
+	"minLength",
+	"maxLength",
+	"pattern",
+	"format",
+	"default",
+	"minItems",
+	"maxItems",
+	"uniqueItems",
+	"contains",
+	"minContains",
+	"maxContains",
+	"unevaluatedItems",
+	"minProperties",
+	"maxProperties",
+	"patternProperties",
+	"propertyNames",
+	"unevaluatedProperties",
+];
+
+/** Schema keys whose values are themselves (maps of / arrays of) schemas. */
+const SCHEMA_MAP_KEYS = ["properties", "$defs", "definitions"];
+const SCHEMA_LIST_KEYS = ["anyOf", "allOf", "oneOf", "prefixItems"];
+
+/**
+ * Normalizes a JSON Schema to OpenAI strict mode's restrictions: recursively
+ * sets `additionalProperties: false` on all object schemas, lists every key of
+ * `properties` in `required` (strict mode permits no optional keys), and strips
+ * unsupported constraint keywords.
+ *
+ * A property that was optional is widened to accept `null` instead, since that
+ * is how strict mode expresses optionality. This changes what the model may
+ * return: a `null` where the task's schema wanted a missing key fails
+ * client-side validation and costs one repair round-trip. Only a declared
+ * `type` can be widened this way — a `$ref`-valued optional property becomes
+ * required as-is.
+ *
+ * Record/map schemas cannot be expressed under these restrictions, so instead
+ * of silently destroying their semantics this THROWS {@link InvalidRequestError}
+ * for: a schema-valued `additionalProperties` (e.g. zod `z.record(...)`), or an
+ * object schema whose only property mechanism is `patternProperties`.
+ * Restructure such data as an array of `{ key, value }` objects, or drop the
+ * wire schema (prompt-strategy tasks validate client-side only).
+ *
+ * @param schema The schema to normalize.
+ * @param adapterId Adapter id reported on a thrown `InvalidRequestError`.
+ */
+export function normalizeOpenAiJsonSchema(
+	schema: JsonSchema,
+	adapterId: string = OPENAI_ADAPTER_ID,
+): JsonSchema {
+	return walkSchema(schema, adapterId) as JsonSchema;
+}
+
+function walkSchema(node: unknown, adapterId: string): unknown {
+	if (Array.isArray(node)) return node.map((n) => walkSchema(n, adapterId));
+	if (node === null || typeof node !== "object") return node;
+
+	const src = node as Record<string, unknown>;
+	const out: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(src)) {
+		if (UNSUPPORTED_SCHEMA_KEYWORDS.includes(key)) continue;
+		if (SCHEMA_MAP_KEYS.includes(key) && value && typeof value === "object") {
+			const map: Record<string, unknown> = {};
+			for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+				map[k] = walkSchema(v, adapterId);
+			}
+			out[key] = map;
+		} else if (SCHEMA_LIST_KEYS.includes(key) && Array.isArray(value)) {
+			out[key] = value.map((v) => walkSchema(v, adapterId));
+		} else if (key === "items") {
+			out[key] = walkSchema(value, adapterId);
+		} else {
+			out[key] = value;
+		}
+	}
+
+	const isObjectSchema = out.type === "object" || out.properties !== undefined ||
+		src.patternProperties !== undefined;
+	if (isObjectSchema) {
+		// forcing additionalProperties: false onto these would silently rewrite
+		// the schema into "always {}" — fail fast instead
+		if (src.additionalProperties && typeof src.additionalProperties === "object") {
+			throw new InvalidRequestError(
+				"OpenAI structured outputs do not support record/map schemas " +
+					"(schema-valued `additionalProperties`). Restructure as an array of " +
+					"{ key, value } objects, or drop the wire schema.",
+				{ adapter: adapterId },
+			);
+		}
+		if (src.patternProperties !== undefined && src.properties === undefined) {
+			throw new InvalidRequestError(
+				"OpenAI structured outputs do not support `patternProperties` as an " +
+					"object schema's only property mechanism. Restructure the schema, or " +
+					"drop the wire schema.",
+				{ adapter: adapterId },
+			);
+		}
+		out.additionalProperties = false;
+
+		const properties = out.properties as Record<string, unknown> | undefined;
+		if (properties && typeof properties === "object") {
+			const wasRequired = new Set(
+				Array.isArray(src.required) ? (src.required as unknown[]) : [],
+			);
+			for (const [key, value] of Object.entries(properties)) {
+				if (!wasRequired.has(key)) properties[key] = widenWithNull(value);
+			}
+			out.required = Object.keys(properties);
+		}
+	}
+	return out;
+}
+
+/** Adds `"null"` to a schema's declared `type`, leaving anything else alone. */
+function widenWithNull(schema: unknown): unknown {
+	if (schema === null || typeof schema !== "object" || Array.isArray(schema)) {
+		return schema;
+	}
+	const { type } = schema as { type?: unknown };
+	if (typeof type === "string") {
+		return type === "null" ? schema : { ...schema, type: [type, "null"] };
+	}
+	if (Array.isArray(type) && type.every((t) => typeof t === "string")) {
+		return type.includes("null") ? schema : { ...schema, type: [...type, "null"] };
+	}
+	return schema;
 }
