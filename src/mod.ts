@@ -49,6 +49,7 @@
 
 export * from "./adapter.ts";
 export * from "./adapters/anthropic.ts";
+export * from "./adapters/azure-openai.ts";
 export * from "./adapters/mock.ts";
 export * from "./adapters/openai.ts";
 export * from "./batch.ts";
