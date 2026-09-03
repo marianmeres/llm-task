@@ -215,6 +215,35 @@ Deno.test("openai: missing api key throws AuthError without fetch", async () => 
 	assertEquals(calls.length, 0);
 });
 
+Deno.test("openai: getToken wins over apiKey and is called once per request", async () => {
+	const { fetch, calls } = makeFetch(() => okBody());
+	let issued = 0;
+	const adapter = createOpenAIAdapter({
+		apiKey: "sk-static",
+		getToken: () => Promise.resolve(`tok-${++issued}`),
+		fetch,
+	});
+	await adapter.complete({ ...req });
+	await adapter.complete({ ...req });
+	assertEquals(issued, 2);
+	assertEquals(calls[0].headers.authorization, "Bearer tok-1");
+	assertEquals(calls[1].headers.authorization, "Bearer tok-2");
+});
+
+Deno.test("openai: a failing getToken surfaces as AuthError", async () => {
+	const { fetch, calls } = makeFetch(() => okBody());
+	const boom = new Error("token endpoint unreachable");
+	const adapter = createOpenAIAdapter({
+		getToken: () => Promise.reject(boom),
+		fetch,
+	});
+	const e = await assertRejects(() => adapter.complete({ ...req }), AuthError);
+	assertEquals(e.cause, boom);
+	assertEquals(e.retryable, false);
+	assertStringIncludes(e.message, "token endpoint unreachable");
+	assertEquals(calls.length, 0);
+});
+
 Deno.test("openai: maps 401 to AuthError", async () => {
 	const { fetch } = makeFetch(() =>
 		errBody(401, "invalid_request_error", "Incorrect API key provided")

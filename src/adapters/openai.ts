@@ -49,8 +49,13 @@ export interface OpenAICompatibleConfig {
 	 * route addresses the model through the URL and omits it.
 	 */
 	sendModel: boolean;
-	/** Lazy credential lookup — called per request, never at construction. */
-	resolveKey: () => string | undefined;
+	/**
+	 * Lazy credential lookup — called per request, never at construction. May be
+	 * async, which is how a short-lived token (Entra ID, managed identity, any
+	 * OAuth flow) is refreshed per call; anything it throws surfaces as
+	 * {@link AuthError}.
+	 */
+	resolveKey: () => string | undefined | Promise<string | undefined>;
 	/** Thrown as {@link AuthError} when `resolveKey` yields nothing. */
 	missingKeyMessage: string;
 	/**
@@ -108,7 +113,17 @@ export function createOpenAICompatibleAdapter(config: OpenAICompatibleConfig): A
 		fingerprint: config.fingerprint,
 		capabilities: config.capabilities,
 		async complete(req: CompletionRequest): Promise<CompletionResult> {
-			const apiKey = config.resolveKey();
+			let apiKey: string | undefined;
+			try {
+				apiKey = await config.resolveKey();
+			} catch (e) {
+				// a broken credential source belongs in the same taxonomy as a
+				// missing key — and is not retryable
+				throw new AuthError(
+					`${config.id} credential lookup failed: ${getErrorMessage(e)}`,
+					{ adapter: config.id, cause: e },
+				);
+			}
 			if (!apiKey) {
 				throw new AuthError(config.missingKeyMessage, { adapter: config.id });
 			}
@@ -208,6 +223,13 @@ export interface OpenAIAdapterOptions {
 	 */
 	apiKey?: string;
 	/**
+	 * Dynamic credential source, called once per request. Takes precedence over
+	 * `apiKey` and the environment fallback. Use for short-lived tokens — any
+	 * OAuth flow, or a gateway-issued token — and do your own caching inside it;
+	 * this package does not cache the token. Throwing surfaces as `AuthError`.
+	 */
+	getToken?: () => string | Promise<string>;
+	/**
 	 * API base URL (no trailing slash).
 	 * @default "https://api.openai.com/v1"
 	 */
@@ -260,7 +282,8 @@ export function createOpenAIAdapter(options: OpenAIAdapterOptions = {}): Adapter
 		buildUrl: () => `${baseUrl}/chat/completions`,
 		buildAuthHeaders: (key) => ({ authorization: `Bearer ${key}` }),
 		sendModel: true,
-		resolveKey: () => options.apiKey ?? readEnv("OPENAI_API_KEY"),
+		resolveKey: () =>
+			options.getToken?.() ?? options.apiKey ?? readEnv("OPENAI_API_KEY"),
 		missingKeyMessage: "Missing OpenAI API key — pass `apiKey` to " +
 			"createOpenAIAdapter() or set the OPENAI_API_KEY environment variable " +
 			"(Deno: requires --allow-env=OPENAI_API_KEY).",

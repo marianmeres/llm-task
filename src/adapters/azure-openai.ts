@@ -22,6 +22,18 @@ export interface AzureOpenAIAdapterOptions {
 	 */
 	apiKey?: string;
 	/**
+	 * Dynamic credential source, called once per request. Takes precedence over
+	 * `apiKey` and the environment fallback. Use for short-lived tokens — an
+	 * Entra ID service principal, a managed identity, any OAuth flow — and do
+	 * your own caching inside it; this package does not cache the token.
+	 * Throwing surfaces as `AuthError`.
+	 *
+	 * Its value is sent in the same `api-key` header a static key uses. A
+	 * resource that expects the token in `Authorization: Bearer` instead needs
+	 * `createOpenAICompatibleAdapter` with its own `buildAuthHeaders`.
+	 */
+	getToken?: () => string | Promise<string>;
+	/**
 	 * When set, the classic deployment route is used and this value is sent as
 	 * `api-version`. When omitted, the OpenAI-compatible `/openai/v1/` surface is
 	 * used and `model` carries the deployment name.
@@ -91,7 +103,8 @@ export function createAzureOpenAIAdapter(
 		buildAuthHeaders: (key) => ({ "api-key": key }),
 		// the classic route addresses the deployment through the URL
 		sendModel: !apiVersion,
-		resolveKey: () => options.apiKey ?? readEnv("AZURE_OPENAI_API_KEY"),
+		resolveKey: () =>
+			options.getToken?.() ?? options.apiKey ?? readEnv("AZURE_OPENAI_API_KEY"),
 		missingKeyMessage: "Missing Azure OpenAI API key — pass `apiKey` to " +
 			"createAzureOpenAIAdapter() or set the AZURE_OPENAI_API_KEY environment " +
 			"variable (Deno: requires --allow-env=AZURE_OPENAI_API_KEY).",

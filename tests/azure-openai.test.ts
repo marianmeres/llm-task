@@ -195,6 +195,37 @@ Deno.test("azure: missing api key throws AuthError without fetch", async () => {
 	assertEquals(calls.length, 0);
 });
 
+Deno.test("azure: getToken wins over apiKey and is called once per request", async () => {
+	const { fetch, calls } = makeFetch(() => okBody());
+	let issued = 0;
+	const adapter = createAzureOpenAIAdapter({
+		endpoint: ENDPOINT,
+		apiKey: "az-static",
+		getToken: () => Promise.resolve(`tok-${++issued}`),
+		fetch,
+	});
+	await adapter.complete({ ...req });
+	await adapter.complete({ ...req });
+	assertEquals(issued, 2);
+	assertEquals(calls[0].headers["api-key"], "tok-1");
+	assertEquals(calls[1].headers["api-key"], "tok-2");
+});
+
+Deno.test("azure: a failing getToken surfaces as AuthError", async () => {
+	const { fetch, calls } = makeFetch(() => okBody());
+	const boom = new Error("managed identity unavailable");
+	const adapter = createAzureOpenAIAdapter({
+		endpoint: ENDPOINT,
+		getToken: () => Promise.reject(boom),
+		fetch,
+	});
+	const e = await assertRejects(() => adapter.complete({ ...req }), AuthError);
+	assertEquals(e.cause, boom);
+	assertEquals(e.retryable, false);
+	assertStringIncludes(e.message, "managed identity unavailable");
+	assertEquals(calls.length, 0);
+});
+
 Deno.test("azure: declares native structured output", () => {
 	const adapter = createAzureOpenAIAdapter({ endpoint: ENDPOINT, apiKey: "k" });
 	assertEquals(adapter.capabilities, {
