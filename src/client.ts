@@ -217,6 +217,14 @@ export interface TaskRunOptions {
 	timeoutMs?: number;
 	/** Cache participation override for this call. */
 	cache?: boolean;
+	/**
+	 * Opaque cache partition for this call. Mixed into the cache key, so callers
+	 * sharing one client but not one identity never read each other's
+	 * completions. Supply it whenever the adapter's credential varies per call
+	 * (e.g. an adapter configured with `getToken()`) and the cache is on — it is
+	 * documented, not enforced.
+	 */
+	cacheScope?: string;
 }
 
 /** The full result envelope (via `task.run()` / `client.run()`). */
@@ -589,6 +597,9 @@ export function createLlmClient(config: LlmClientConfig): LlmClient {
 					cacheKey = await sha256Hex(stableStringify({
 						adapter: adapter.id,
 						fingerprint: adapter.fingerprint ?? null,
+						// stays absent from the key when unset (`JSON.stringify`
+						// drops it), so existing entries keep their keys
+						cacheScope: options.cacheScope,
 						model,
 						system: system ?? null,
 						input: effInput,
