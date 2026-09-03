@@ -28,7 +28,7 @@ Verify: deno fmt --check src/ tests/
 | ✅     | T03 | T02         | `createAzureOpenAIAdapter` over the core                               | [01](./01-openai-compatible-adapter.md) #3   | —      |
 | ✅     | T04 | T03         | `getToken()` dynamic-credential option across the adapters             | [02](./02-adapter-contract-extensions.md) #1 | —      |
 | ✅     | T05 | T04         | `cacheScope` on `TaskRunOptions` for dynamic-identity adapters         | [02](./02-adapter-contract-extensions.md) #2 | —      |
-| ⬜     | T09 | T03         | Live smoke test against a real Azure deployment                        | [03](./03-surface-docs-and-example.md) #4    | —      |
+| ✅     | T09 | T03         | Live smoke test against a real Azure deployment                        | [03](./03-surface-docs-and-example.md) #4    | —      |
 | ⬜     | T06 | T03 T04 T05 | README + API.md: document all three real adapters                      | [03](./03-surface-docs-and-example.md) #1    | —      |
 | ⬜     | T07 | T03 T04 T05 | AGENTS.md: wire format, contract extensions, no-Azure-in-example note  | [03](./03-surface-docs-and-example.md) #2    | —      |
 
@@ -80,6 +80,11 @@ not reused.
 - **2026-09-03** — **`getToken()` lands on the Anthropic adapter too**, for symmetry — dead
   weight unless a token-authenticating gateway sits in front of it, but a per-adapter
   credential model is worse than one uniform one. Cheap to drop from T04 if you disagree.
+- **2026-09-03** — **`test:live:azure` grants `--allow-net` unscoped** (T09, the form left
+  open by doc 03) — the resource host is per-customer, `deno.json` is parsed as strict JSON
+  elsewhere in the toolchain so an explanatory comment cannot live there, and the narrower
+  scope stays available by running the file directly. The reason is stated in the test file's
+  module doc and in `.env.example`; `test:live` keeps its `api.anthropic.com` scope.
 - **2026-09-03** — Single sprint rather than two sprints plus a backlog — at eight tasks the
   section split bought nothing, and a run ends at the next sprint heading, so splitting would
   have meant three invocations for one body of work.
