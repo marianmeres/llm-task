@@ -23,14 +23,14 @@ Verify: deno fmt --check src/ tests/
 
 | Status | ID  | Deps        | Task                                                                   | Source                                       | Commit |
 | ------ | --- | ----------- | ---------------------------------------------------------------------- | -------------------------------------------- | ------ |
-| ✅     | T01 | —           | OpenAI-compatible core + `createOpenAIAdapter`, no native schema yet   | [01](./01-openai-compatible-adapter.md) #1   | —      |
-| ✅     | T02 | T01         | OpenAI strict-mode schema normaliser; enable `capabilities.jsonSchema` | [01](./01-openai-compatible-adapter.md) #2   | —      |
-| ✅     | T03 | T02         | `createAzureOpenAIAdapter` over the core                               | [01](./01-openai-compatible-adapter.md) #3   | —      |
-| ✅     | T04 | T03         | `getToken()` dynamic-credential option across the adapters             | [02](./02-adapter-contract-extensions.md) #1 | —      |
-| ✅     | T05 | T04         | `cacheScope` on `TaskRunOptions` for dynamic-identity adapters         | [02](./02-adapter-contract-extensions.md) #2 | —      |
-| ✅     | T09 | T03         | Live smoke test against a real Azure deployment                        | [03](./03-surface-docs-and-example.md) #4    | —      |
-| ✅     | T06 | T03 T04 T05 | README + API.md: document all three real adapters                      | [03](./03-surface-docs-and-example.md) #1    | —      |
-| ✅     | T07 | T03 T04 T05 | AGENTS.md: wire format, contract extensions, no-Azure-in-example note  | [03](./03-surface-docs-and-example.md) #2    | —      |
+| ✅     | T01 | —           | OpenAI-compatible core + `createOpenAIAdapter`, no native schema yet   | [01](./01-openai-compatible-adapter.md) #1   | fc7d794 |
+| ✅     | T02 | T01         | OpenAI strict-mode schema normaliser; enable `capabilities.jsonSchema` | [01](./01-openai-compatible-adapter.md) #2   | d0388ff |
+| ✅     | T03 | T02         | `createAzureOpenAIAdapter` over the core                               | [01](./01-openai-compatible-adapter.md) #3   | ec04fd1 |
+| ✅     | T04 | T03         | `getToken()` dynamic-credential option across the adapters             | [02](./02-adapter-contract-extensions.md) #1 | 00ee205 |
+| ✅     | T05 | T04         | `cacheScope` on `TaskRunOptions` for dynamic-identity adapters         | [02](./02-adapter-contract-extensions.md) #2 | d44c4e1 |
+| ✅     | T09 | T03         | Live smoke test against a real Azure deployment                        | [03](./03-surface-docs-and-example.md) #4    | d7b6e3e |
+| ✅     | T06 | T03 T04 T05 | README + API.md: document all three real adapters                      | [03](./03-surface-docs-and-example.md) #1    | b56d9b4 |
+| ✅     | T07 | T03 T04 T05 | AGENTS.md: wire format, contract extensions, no-Azure-in-example note  | [03](./03-surface-docs-and-example.md) #2    | 195bb5b |
 
 Each row includes its own tests and its `src/mod.ts` export line — one reviewable commit per
 row, green at every step. Row order is execution order: all code lands before the two
