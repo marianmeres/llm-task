@@ -39,10 +39,13 @@ export {
 	ContextLengthError,
 	// adapters
 	createAnthropicAdapter,
+	createAzureOpenAIAdapter,
 	// client / tasks
 	createLlmClient, // LlmClient: task(), run(), adapter
 	createMemoryCache,
 	createMockAdapter,
+	createOpenAIAdapter,
+	createOpenAICompatibleAdapter, // any OpenAI-shaped endpoint (Groq, Ollama, ...)
 	errorFromHttpStatus,
 	firstLine,
 	formatIssues,
@@ -50,7 +53,8 @@ export {
 	isRetryableError,
 	isStandardSchema,
 	LLMError,
-	normalizeJsonSchema,
+	normalizeJsonSchema, // Anthropic
+	normalizeOpenAiJsonSchema, // OpenAI strict mode
 	OutputValidationError,
 	parseJsonLoose,
 	parseRetryAfter,
@@ -70,7 +74,8 @@ export {
 // MemoryCacheOptions, BatchOptions, BatchProgress, BatchItemResult, Cleaner,
 // Logger, StandardSchemaV1, StandardSchemaProps, StandardResult, InferOutput,
 // JsonSchema, ValidationIssue, *ErrorOptions, MockAdapter, MockAdapterOptions,
-// MockResponse, AnthropicAdapterOptions
+// MockResponse, AnthropicAdapterOptions, OpenAIAdapterOptions,
+// AzureOpenAIAdapterOptions, OpenAICompatibleConfig, MaxTokensField
 ```
 
 ## Core Types
@@ -160,20 +165,32 @@ wire format.
    `allowTruncated: true`); `"content_filter"` always throws
    `ContentFilterError`.
 8. **Cache**: key = sha256 of stable-stringified `(adapter.id,
-   adapter.fingerprint, model, system, input, maxTokens, temperature, wire
-   jsonSchema)`. Only `finishReason: "stop"` completions cached, `raw` not
+   adapter.fingerprint, cacheScope, model, system, input, maxTokens,
+   temperature, wire jsonSchema)` — `cacheScope` stays absent from the key when
+   unset, so existing entries keep their keys. Only `finishReason: "stop"` completions cached, `raw` not
    cached (result `raw` is `undefined` on hits). Post-processing re-runs on
    hits; a stale hit failing validation triggers the repair round-trip, is
    re-cached, and reports `cached: false` (a real call happened). Cache backend
    / hashing errors are logged and swallowed (degrade to uncached).
-9. **Env access**: lazy + guarded — explicit `apiKey` never touches env; in
-   Deno the permission is queried (never prompted); Node/Bun read
-   `process.env`; browser/Workers return `undefined`.
+9. **Credentials**: resolved per request, `getToken()` > explicit `apiKey` >
+   env var. `getToken()` (all three real adapters) is awaited on every call and
+   nothing about it is cached — a short-lived token does its own caching
+   inside; a throw becomes a non-retryable `AuthError`. Env access is lazy +
+   guarded: an explicit `apiKey` never touches env; in Deno the permission is
+   queried (never prompted); Node/Bun read `process.env`; browser/Workers
+   return `undefined`.
 10. **Hooks/logger**: hooks (client- then task-level) are pure observers,
     throws swallowed + logged. `logger` defaults to quiet (warn/error only);
     `console` / `@marianmeres/clog` compatible.
 11. **Input truncation**: opt-in `maxInputChars`; reported via
     `onInputTruncated` hook + `inputTruncated` result flag, never silent.
+12. **Cache x dynamic identity**: `adapter.fingerprint` is fixed at
+    construction, so it cannot see whose token `getToken()` returned. One shared
+    adapter + a per-caller token + the cache on = callers reading each other's
+    completions. Partition with `TaskRunOptions.cacheScope` (opaque string,
+    e.g. a tenant/user id). Deliberately **documented, not enforced** — no
+    capability flag, no client-side throw; consistent with the cache being
+    opt-in per client.
 
 ## Anthropic wire format (adapter)
 
@@ -193,6 +210,55 @@ wire format.
 - Transport: `fetchOrThrow` from `@marianmeres/http-utils` (injectable via
   `options.fetch` — see tests).
 
+## OpenAI / Azure wire format (adapters)
+
+One parameterized core (`createOpenAICompatibleAdapter`, `src/adapters/openai.ts`)
+plus thin per-provider factories: the delta between providers is three config
+values — URL shape, auth header, whether `model` is sent. The core is exported,
+and is the supported way to reach Groq/Together/OpenRouter/Fireworks/Ollama.
+
+- Body: `{ messages: [{ role: "system", content: system }?, { role: "user",
+  content: input }], [maxTokensField]: maxTokens, model?, temperature?,
+  response_format?: { type: "json_schema", json_schema: { name: "output",
+  strict: true, schema } } }`. System and input stay separate messages.
+- `maxTokensField` is `max_completion_tokens` by default, `max_tokens` opt-in —
+  newer models reject the legacy name, older clone endpoints require it.
+- **OpenAI** (`createOpenAIAdapter`): `POST {baseUrl}/chat/completions`
+  (default `https://api.openai.com/v1`), `authorization: Bearer <key>`, sends
+  `model`; env fallback `OPENAI_API_KEY`.
+- **Azure** (`createAzureOpenAIAdapter`): `api-key: <key>` header (a `getToken()`
+  value goes in the same header — a `Bearer` resource needs the core with its
+  own `buildAuthHeaders`), and `CompletionRequest.model` carries the
+  **deployment name**. Two routes: by default `POST` to
+  `{endpoint}/openai/v1/chat/completions` sending `model`; with `apiVersion`
+  set, the classic
+  `{endpoint}/openai/deployments/{deployment}/chat/completions?api-version=X`,
+  which addresses the deployment through the URL and omits `model` from the
+  body. Env fallback `AZURE_OPENAI_API_KEY`.
+- Response: `choices[0].message.content` (`null` on a refusal / tool-only turn
+  → `""`), `finish_reason` → `stop|length|content_filter|other`,
+  `usage.prompt_tokens`/`completion_tokens`. A 2xx with a non-JSON body becomes
+  a `TransientError`, never a bare `SyntaxError`.
+- Errors: body `{ error: { message, type, param, code } }`, falling back to raw
+  text then `statusText`; context-length 400 detected by `code ===
+  "context_length_exceeded"` or a message regex; otherwise shared
+  `errorFromHttpStatus()` + `parseRetryAfter()`.
+- `normalizeOpenAiJsonSchema()` (strict mode) recursively forces
+  `additionalProperties: false`, puts EVERY key of `properties` into `required`
+  (strict mode permits no optional keys) and widens a formerly-optional
+  property's declared `type` with `"null"` — a `$ref`-valued optional just
+  becomes required. Strips the keywords strict mode rejects (`minimum`,
+  `pattern`, `format`, `minItems`, `patternProperties`, ...). Like the Anthropic
+  normalizer it THROWS `InvalidRequestError` rather than silently rewriting:
+  schema-valued `additionalProperties` (record/map, e.g. zod `z.record()`) and
+  `patternProperties`-only object schemas.
+- `capabilities`: `jsonSchema: true`, `jsonMode: false`, `streaming: false`.
+- `fingerprint` covers endpoint + wire options + custom headers, so two
+  differently configured instances sharing an `id` never collide in one cache.
+  It cannot cover a `getToken()` identity — that is `cacheScope`'s job (#12).
+- Transport: same as Anthropic — `fetchOrThrow`, injectable `fetch`, aborts
+  pass through untouched, `NetworkError` → `TransientError`.
+
 ## File Structure
 
 ```
@@ -201,7 +267,9 @@ src/
   client.ts             # createLlmClient — the policy layer (largest file)
   adapter.ts            # Adapter contract types
   adapters/anthropic.ts # Anthropic Messages API adapter
+  adapters/azure-openai.ts # Azure OpenAI — thin config of the OpenAI core
   adapters/mock.ts      # Mock adapter (tests/consumers)
+  adapters/openai.ts    # OpenAI Chat Completions + the OpenAI-compatible core
   batch.ts              # bounded-concurrency batch()
   cache.ts              # LlmCache contract + createMemoryCache (LRU)
   cleaners.ts           # output cleaners
@@ -211,7 +279,8 @@ src/
   utils.ts              # env/signals/backoff/hash internals
 tests/
   *.test.ts             # offline: DI fetch stub + mock adapter
-  live-smoke.test.ts    # opt-in live API test (auto-ignored without perms)
+  live-smoke.test.ts    # opt-in live API tests, Anthropic + Azure
+                        # (auto-ignored without perms/credentials)
 scripts/
   build-npm.ts          # packages .npm-dist/ via @marianmeres/npmbuild
   gen-example-theme.ts  # example/theme.css from @marianmeres/design-tokens
@@ -233,7 +302,12 @@ index.html              # root redirect to ./example/, publish-excluded
 ```bash
 deno task test          # offline tests (no permissions, no network)
 deno task test:watch
-deno task test:live     # live smoke test — needs ANTHROPIC_API_KEY (or .env)
+deno task test:live     # live smoke test — needs ANTHROPIC_API_KEY (or .env);
+                        # --allow-net scoped to api.anthropic.com
+deno task test:live:azure # live Azure case — needs AZURE_OPENAI_ENDPOINT +
+                        # _API_KEY + _DEPLOYMENT. --allow-net is unscoped: the
+                        # resource host is per-customer and deno.json is parsed
+                        # as strict JSON, so no comment can live there
 deno task npm:build     # build npm package
 deno task publish       # publish to JSR and npm
 deno task release       # bump version
@@ -312,6 +386,18 @@ the browser's CORS preflight fails, and because the client cannot distinguish a
 blocked request from a flaky network it surfaces as a **retried**
 `TransientError`.
 
+**There is deliberately no Azure entry** (decided 2026-09-03), even though Azure
+satisfies `LiveProvider` on paper — an `api-key` is a pasteable string, so every
+field has a sensible value. The obstacle is outside the code: Azure OpenAI
+rejects cross-origin browser calls unless CORS is configured **on the resource**,
+which is the resource owner's job and something a registry entry cannot declare.
+An entry would therefore fail for every reader who has not configured their own
+resource, and fail as the retry storm described above — no visible cause. A
+convenience that misleads is worth less than its absence. To revisit: test
+against a real resource with CORS configured for the page's origin; if a browser
+call succeeds, add the entry with a `note` stating the CORS requirement. The
+key-handling rules below apply unchanged.
+
 **Key-handling rules — do not regress these:**
 
 - The key input is `type="password"`; the key is **never** interpolated into the
@@ -351,22 +437,30 @@ blocked request from a flaky network it surfaces as a **retried**
 
 ## Testing Notes
 
-- Offline tests inject `fetch` into `createAnthropicAdapter({ fetch })` — the
-  DI stub pattern (`makeFetch` in `tests/anthropic.test.ts`); no globals
-  patched.
+- Offline tests inject `fetch` into the adapter factory (every real one takes
+  `{ fetch }`) — the DI stub pattern (`makeFetch` in `tests/anthropic.test.ts`,
+  `tests/openai.test.ts`, `tests/azure-openai.test.ts`); no globals patched.
 - `tests/schema.test.ts` exports `fakeSchema()` — a minimal hand-rolled
   Standard Schema used by client tests.
 - Retry/timeout tests use millisecond-scale delays (`baseDelayMs: 1`).
 - `tests/live-smoke.test.ts` self-ignores unless env+net permissions are
-  granted AND `ANTHROPIC_API_KEY` is set (permissions are queried via
-  `Deno.permissions.querySync`, never prompted).
+  granted AND the provider's credentials are set — `ANTHROPIC_API_KEY` for the
+  Anthropic cases, all three `AZURE_OPENAI_*` vars for the Azure one
+  (permissions are queried via `Deno.permissions.querySync`, never prompted).
+  The Azure case asserts structured output, not a string completion: the
+  strict-mode normalizer is the part offline tests can least validate.
 
 ## Extending
 
-- **New adapter**: implement `Adapter.complete()` (~40 lines) using
-  `errorFromHttpStatus` + `parseRetryAfter`; keep it policy-free. The obvious
-  next one is an OpenAI-compatible adapter with a configurable `baseURL`
-  (covers OpenAI/Groq/OpenRouter/Ollama/...).
+- **OpenAI-shaped endpoint** (Groq, Together, OpenRouter, Fireworks, GitHub
+  Models, self-hosted Ollama): no new adapter and no PR — configure the exported
+  `createOpenAICompatibleAdapter` with the provider's URL, auth header and
+  `sendModel`. A dedicated factory is worth adding only when a provider needs
+  its own defaults, as OpenAI and Azure do.
+- **New adapter** (a genuinely different wire format): implement
+  `Adapter.complete()` (~40 lines) using `errorFromHttpStatus` +
+  `parseRetryAfter`; keep it policy-free. Give it a `fingerprint` covering
+  everything that changes the answer, and an injectable `fetch` for tests.
 - **Streaming (future)**: add a separate optional `stream()` guarded by
   `capabilities.streaming`; do not bend `complete()` around it.
 - **Fallback chains**: intentionally NOT a client feature — wrap the client in
