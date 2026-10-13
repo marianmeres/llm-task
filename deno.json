@@ -50,5 +50,8 @@
 			"example/theme.css",
 			"tmp"
 		]
+	},
+	"minimumDependencyAge": {
+		"exclude": ["jsr:@marianmeres/*"]
 	}
 }
