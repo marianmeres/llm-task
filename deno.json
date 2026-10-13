@@ -14,16 +14,16 @@
 		"example:serve": "deno run -A jsr:@std/http/file-server example --port 8000",
 		"npm:build": "deno run -A scripts/build-npm.ts",
 		"npm:publish": "deno run -A scripts/build-npm.ts && cd ./.npm-dist && npm publish --access=public",
-		"release": "deno run -A jsr:@marianmeres/release",
+		"release": "deno run -A jsr:@marianmeres/release@^2.1.0 --before-commit \"deno task example:build\"",
 		"publish": "deno publish && deno task npm:publish",
 		"rp": "deno task release -y && deno task publish",
 		"rpm": "deno task release minor -y && deno task publish"
 	},
 	"imports": {
-		"@marianmeres/design-tokens": "jsr:@marianmeres/design-tokens@^1.17.0",
-		"@marianmeres/http-utils": "jsr:@marianmeres/http-utils@^2.11.0",
+		"@marianmeres/design-tokens": "jsr:@marianmeres/design-tokens@^1.20.0",
+		"@marianmeres/http-utils": "jsr:@marianmeres/http-utils@^2.12.0",
 		"@marianmeres/npmbuild": "jsr:@marianmeres/npmbuild@^1.16.0",
-		"@marianmeres/vanilla": "jsr:@marianmeres/vanilla@^1.8.0",
+		"@marianmeres/vanilla": "jsr:@marianmeres/vanilla@^1.10.0",
 		"@std/assert": "jsr:@std/assert@^1.0.19",
 		"@std/fs": "jsr:@std/fs@^1.0.24",
 		"@std/path": "jsr:@std/path@^1.1.6"

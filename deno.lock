@@ -5,11 +5,11 @@
     "jsr:@deno/emit@0.46": "0.46.0",
     "jsr:@luca/esbuild-deno-loader@~0.11.1": "0.11.1",
     "jsr:@marianmeres/deno-build@*": "2.2.0",
-    "jsr:@marianmeres/design-tokens@^1.17.0": "1.17.0",
-    "jsr:@marianmeres/http-utils@^2.11.0": "2.11.0",
+    "jsr:@marianmeres/design-tokens@^1.20.0": "1.20.0",
+    "jsr:@marianmeres/http-utils@^2.12.0": "2.12.0",
     "jsr:@marianmeres/npmbuild@^1.16.0": "1.16.0",
     "jsr:@marianmeres/release@*": "2.0.0",
-    "jsr:@marianmeres/vanilla@^1.8.0": "1.8.0",
+    "jsr:@marianmeres/vanilla@^1.10.0": "1.10.0",
     "jsr:@std/assert@0.223": "0.223.0",
     "jsr:@std/assert@^1.0.19": "1.0.19",
     "jsr:@std/bytes@0.223": "0.223.0",
@@ -77,11 +77,11 @@
         "npm:esbuild"
       ]
     },
-    "@marianmeres/design-tokens@1.17.0": {
-      "integrity": "33d50bfaeafb72ea85eaa2740314c8bc31eef3c799d947afbcd50cc581a00d95"
+    "@marianmeres/design-tokens@1.20.0": {
+      "integrity": "400945040f3b1685ca6c4837f36fd5c85443ce9f90e0c062f83f3c1d60e8410c"
     },
-    "@marianmeres/http-utils@2.11.0": {
-      "integrity": "89adc986b157f0b3eab6025823d0ad0830de49da84dea7fe99802bd33bbaaf8f"
+    "@marianmeres/http-utils@2.12.0": {
+      "integrity": "2e80298eb3a75a551aa27f16f34b53042dd6289d872b88abc350b434376bab3e"
     },
     "@marianmeres/npmbuild@1.16.0": {
       "integrity": "5631b65d284472d1325ecf829dce22e2df166fa3b754cd3f005c8eccd05ee8f0",
@@ -94,8 +94,8 @@
     "@marianmeres/release@2.0.0": {
       "integrity": "a0358067f8500edaa795f22f6f962765a7f20edd6d8869c0793f11ee02fb47c0"
     },
-    "@marianmeres/vanilla@1.8.0": {
-      "integrity": "433df0c48f939742b5f8ec41071d9a2cede7757dc09279872171b5c5c615fa44"
+    "@marianmeres/vanilla@1.10.0": {
+      "integrity": "f0154cb3e38cf9af202586132da75d774a6a4a78e8022b6fdb65820d60a5551e"
     },
     "@std/assert@0.223.0": {
       "integrity": "eb8d6d879d76e1cc431205bd346ed4d88dc051c6366365b1af47034b0670be24"
@@ -359,10 +359,10 @@
   },
   "workspace": {
     "dependencies": [
-      "jsr:@marianmeres/design-tokens@^1.17.0",
-      "jsr:@marianmeres/http-utils@^2.11.0",
+      "jsr:@marianmeres/design-tokens@^1.20.0",
+      "jsr:@marianmeres/http-utils@^2.12.0",
       "jsr:@marianmeres/npmbuild@^1.16.0",
-      "jsr:@marianmeres/vanilla@^1.8.0",
+      "jsr:@marianmeres/vanilla@^1.10.0",
       "jsr:@std/assert@^1.0.19",
       "jsr:@std/fs@^1.0.24",
       "jsr:@std/path@^1.1.6"
