@@ -1,6 +1,6 @@
 {
 	"name": "@marianmeres/llm-task",
-	"version": "0.3.1",
+	"version": "0.4.0",
 	"exports": "./src/mod.ts",
 	"tasks": {
 		"test": "deno test tests/",
@@ -52,6 +52,8 @@
 		]
 	},
 	"minimumDependencyAge": {
-		"exclude": ["jsr:@marianmeres/*"]
+		"exclude": [
+			"jsr:@marianmeres/*"
+		]
 	}
 }
